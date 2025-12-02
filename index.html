@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RDM Sightreading Rhythm Generator</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <!-- VexFlow (UMD build; exposes window.Vex.Flow) -->
+<script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.5/build/cjs/vexflow.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div>
+        <div class="title">RDM Sightreading Rhythm Generator</div>
+        <div class="sub">VexFlow notation + WebAudio playback</div>
+      </div>
+
+      <div class="controls">
+        <label class="field">
+          <span>Measures</span>
+          <input id="measures" type="number" min="1" max="32" value="8" />
+        </label>
+
+        <label class="field">
+          <span>Tempo</span>
+          <input id="tempo" type="range" min="40" max="220" value="120" />
+          <span class="pill"><span id="tempoVal">120</span> bpm</span>
+        </label>
+
+        <label class="field">
+          <span>Rests</span>
+          <input id="rests" type="range" min="0" max="60" value="15" />
+          <span class="pill"><span id="restsVal">15</span>%</span>
+        </label>
+
+        <label class="check">
+          <input id="allowTriplets" type="checkbox" checked />
+          <span>Allow triplets</span>
+        </label>
+
+        <div class="btnRow">
+          <button id="regen" class="btn primary">Regenerate</button>
+          <button id="play" class="btn">Play</button>
+          <button id="stop" class="btn danger" disabled>Stop</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <div id="status" class="status">Ready.</div>
+      <div id="error" class="error" hidden></div>
+      <div id="scoreWrap" class="scoreWrap">
+        <canvas id="score" class="score"></canvas>
+      </div>
+    </main>
+  </div>
+
+  <script src="./main.js"></script>
+</body>
+</html>
