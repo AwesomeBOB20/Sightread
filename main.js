@@ -18,6 +18,14 @@
   const scoreEl = $("score");
   const scoreWrapEl = $("scoreWrap");
 
+  function syncSliderFill(input) {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const val = Number(input.value || 0);
+    const pct = max === min ? 0 : ((val - min) / (max - min)) * 100;
+    input.style.setProperty("--bg-pos", `0 0 / ${pct}% 100%`);
+  }
+
   function setStatus(msg) { statusEl.textContent = msg; }
   function showError(err) {
     errorEl.hidden = false;
@@ -34,28 +42,75 @@
     throw new Error("VexFlow did not load. Check your internet / CDN.");
   }
 
+  // --- Scratch VF context (required for dotted modifiers during width calc) ---
+  let _scratchVFContext = null;
+  function getScratchVFContext(flow) {
+    if (_scratchVFContext) return _scratchVFContext;
+    const c = document.createElement("canvas");
+    c.width = 32; c.height = 32;
+    const r = new flow.Renderer(c, flow.Renderer.Backends.CANVAS);
+    r.resize(32, 32);
+    _scratchVFContext = r.getContext();
+    _scratchVFContext.setFont("Arial", 10, "");
+    return _scratchVFContext;
+  }
+
   // ---------- Rhythm model ----------
   function chance(pct) {
     return Math.random() * 100 < pct;
   }
 
   function pickBeatPattern({ restPct, allowTriplets }) {
-    const options = allowTriplets ? ["q", "8s", "16s", "8t"] : ["q", "8s", "16s"];
-    const r = Math.random();
-    const choice =
-      options.length === 4
-        ? (r < 0.33 ? "8s" : r < 0.58 ? "16s" : r < 0.80 ? "q" : "8t")
-        : (r < 0.40 ? "8s" : r < 0.70 ? "16s" : "q");
+    // Added dotted-8th patterns inside ONE beat (0.75 + 0.25 = 1.0)
+    const options = allowTriplets
+      ? ["q", "8s", "16s", "8t", "d8_16", "16_d8r", "d8r_16"]
+      : ["q", "8s", "16s", "d8_16", "16_d8r", "d8r_16"];
 
-    const make = (dur, beats) => ({
+    const r = Math.random();
+    let choice;
+
+    if (allowTriplets) {
+      // includes triplets + dotted 8th variations
+      choice =
+        r < 0.28 ? "8s" :
+        r < 0.50 ? "16s" :
+        r < 0.62 ? "q"  :
+        r < 0.74 ? "8t" :
+        r < 0.84 ? "d8_16" :
+        r < 0.93 ? "16_d8r" :
+                   "d8r_16";
+    } else {
+      choice =
+        r < 0.34 ? "8s" :
+        r < 0.62 ? "16s" :
+        r < 0.78 ? "q"  :
+        r < 0.89 ? "d8_16" :
+        r < 0.95 ? "16_d8r" :
+                   "d8r_16";
+    }
+
+    const make = (dur, beats, dots = 0) => ({
       kind: chance(restPct) ? "rest" : "note",
       dur,
+      dots,
       beats,
     });
+    const makeNote = (dur, beats, dots = 0) => ({ kind: "note", dur, dots, beats });
+    const makeRest = (dur, beats, dots = 0) => ({ kind: "rest", dur, dots, beats });
 
     if (choice === "q") return [make("q", 1)];
     if (choice === "8s") return [make("8", 0.5), make("8", 0.5)];
     if (choice === "16s") return [make("16", 0.25), make("16", 0.25), make("16", 0.25), make("16", 0.25)];
+
+    // DOTTED-8 VARIATIONS YOU REQUESTED (each totals 1 beat)
+    // 16 16 r r  -> 16 d8r  (interpreted as: 16 + dotted8 REST)
+    if (choice === "16_d8r") return [makeNote("16", 0.25), makeRest("8", 0.75, 1)];
+
+    // r r r 16  -> d8r 16
+    if (choice === "d8r_16") return [makeRest("8", 0.75, 1), makeNote("16", 0.25)];
+
+    // 16 r r 16 -> d8 16 (merge rests into the dotted 8)
+    if (choice === "d8_16") return [makeNote("8", 0.75, 1), makeNote("16", 0.25)];
 
     const t = [make("8", 1 / 3), make("8", 1 / 3), make("8", 1 / 3)];
     t._tuplet = { num_notes: 3, notes_occupied: 2 };
@@ -71,8 +126,92 @@
     return null;
   }
 
-  function absorbRestsInBeat(beat) {
-    // Skip tuplets entirely
+  // --- Normalize beats into your preferred spellings ---
+  function normalizeSixteenthGridBeat(beat) {
+    const eps = 1e-6;
+    if (!beat || beat._tuplet) return beat;
+
+    const N = (dur, beats, dots = 0) => ({ kind: "note", dur, beats, dots });
+    const R = (dur, beats, dots = 0) => ({ kind: "rest", dur, beats, dots });
+
+    const is16r = (e) =>
+      e &&
+      e.kind === "rest" &&
+      e.dur === "16" &&
+      Math.abs((e.beats ?? 0) - 0.25) < eps &&
+      Number(e.dots || 0) === 0;
+
+    const isPlain8 = (e) =>
+      e &&
+      (e.kind === "note" || e.kind === "rest") &&
+      e.dur === "8" &&
+      Math.abs((e.beats ?? 0) - 0.5) < eps &&
+      Number(e.dots || 0) === 0;
+
+    // NEW: Fix the 3-token version you screenshotted: 16r 16r 8  -> 8r 8
+    if (beat.length === 3 && is16r(beat[0]) && is16r(beat[1]) && isPlain8(beat[2])) {
+      return [R("8", 0.5), beat[2].kind === "note" ? N("8", 0.5) : R("8", 0.5)];
+    }
+    // (symmetry) 8 16r 16r -> 8 8r
+    if (beat.length === 3 && isPlain8(beat[0]) && is16r(beat[1]) && is16r(beat[2])) {
+      return [beat[0].kind === "note" ? N("8", 0.5) : R("8", 0.5), R("8", 0.5)];
+    }
+
+    // Only touch "four 16th slots" beats
+    if (beat.length !== 4) return beat;
+    for (const e of beat) {
+      if (e.dur !== "16") return beat;
+      if (Math.abs((e.beats ?? 0) - 0.25) > eps) return beat;
+      if (Number(e.dots || 0) !== 0) return beat;
+    }
+
+    const pat = beat.map((e) => (e.kind === "note" ? "n" : "r")).join("");
+
+    // Your image rules:
+    if (pat === "rnrr") return [R("16", 0.25), N("8", 0.75, 1)];
+    if (pat === "rrrn") return [R("8", 0.75, 1), N("16", 0.25)];
+    if (pat === "nrrn") return [N("8", 0.75, 1), N("16", 0.25)];
+    if (pat === "nnrr") return [N("16", 0.25), N("16", 0.25), R("8", 0.5)];
+    if (pat === "rrnn") return [R("8", 0.5), N("8", 0.5)];
+    if (pat === "nrrr") return [N("q", 1)];
+
+    return beat;
+  }
+
+  // NEW: catch 16r 16r 8  (and 8r 16 16) even when beat isn't 4 tokens
+  function normalizeEighthRestEighth(beat) {
+    const eps = 1e-6;
+    if (!beat || beat._tuplet) return beat;
+
+    const N = (dur, beats, dots = 0) => ({ kind: "note", dur, beats, dots });
+    const R = (dur, beats, dots = 0) => ({ kind: "rest", dur, beats, dots });
+
+    const is16r = (e) => e && e.kind === "rest" && e.dur === "16" && Math.abs((e.beats ?? 0) - 0.25) < eps && !e.dots;
+    const is16n = (e) => e && e.kind === "note" && e.dur === "16" && Math.abs((e.beats ?? 0) - 0.25) < eps && !e.dots;
+    const is8r  = (e) => e && e.kind === "rest" && e.dur === "8"  && Math.abs((e.beats ?? 0) - 0.5)  < eps && !e.dots;
+
+    const out = beat.map((e) => ({ ...e }));
+
+    // 16r 16r X  -> 8r X
+    if (out.length >= 2 && is16r(out[0]) && is16r(out[1])) {
+      out.splice(0, 2, R("8", 0.5));
+    }
+
+    // X 16r 16r  -> X 8r
+    const L = out.length;
+    if (L >= 2 && is16r(out[L - 2]) && is16r(out[L - 1])) {
+      out.splice(L - 2, 2, R("8", 0.5));
+    }
+
+    // 8r 16 16 -> 8r 8
+    if (out.length === 3 && is8r(out[0]) && is16n(out[1]) && is16n(out[2])) {
+      return [out[0], N("8", 0.5)];
+    }
+
+    return out;
+  }
+
+  function absorbRestsInBeat(beat) {    // Skip tuplets entirely
     if (beat && beat._tuplet) return beat;
 
     const out = beat.map((e) => ({ ...e }));
@@ -84,7 +223,9 @@
       // Sum consecutive rests after this note
       let j = i + 1;
       let restSum = 0;
+      let hasDottedRest = false;
       while (j < out.length && out[j].kind === "rest") {
+        if (out[j].dots) hasDottedRest = true;
         restSum += out[j].beats;
         j++;
       }
@@ -93,8 +234,17 @@
       const total = e.beats + restSum;
       const newDur = durFromBeats(total);
 
-      // Only absorb if it becomes a clean duration we support
-      if (newDur === "8" || newDur === "q") {
+      // RULE: 16th + dotted-8th REST (0.25 + 0.75) => quarter note
+      if (hasDottedRest && newDur === "q") {
+        e.beats = 1;
+        e.dur = "q";
+        e.dots = 0;
+        out.splice(i + 1, j - (i + 1)); // remove absorbed rests
+        continue;
+      }
+
+      // Otherwise keep the old behavior (don’t absorb dotted rests)
+      if (!hasDottedRest && (newDur === "8" || newDur === "q")) {
         e.beats = total;
         e.dur = newDur;
         out.splice(i + 1, j - (i + 1)); // remove absorbed rests
@@ -114,54 +264,49 @@
   }
 
   function mergeTripletBeatClean(beat) {
-    if (!beat || !beat._tuplet) return beat;
+  if (!beat || !beat._tuplet) return beat;
 
-    const b = beat.map((e) => ({ ...e })); // clone elems
-    const pat = b.map((e) => (e.kind === "note" ? "n" : "r")).join("");
+  const pat = beat.map((e) => (e.kind === "note" ? "n" : "r")).join("");
 
-    // r r r -> quarter rest (drop tuplet entirely)
-    if (pat === "rrr") {
-      return [{ kind: "rest", dur: "q", beats: 1 }];
-    }
+  // r r r -> quarter rest (drop tuplet entirely)
+  if (pat === "rrr") return [{ kind: "rest", dur: "q", beats: 1 }];
 
-    // r n r -> 8th rest, then quarter note (still triplet beat)
-    if (pat === "rnr") {
-      const out = [
-        { kind: "rest", dur: "8", beats: 1 / 3 },
-        { kind: "note", dur: "q", beats: 2 / 3 },
-      ];
-      out._tuplet = beat._tuplet;
-      return out;
-    }
+  // n r r -> quarter note (drop tuplet entirely)
+  if (pat === "nrr") return [{ kind: "note", dur: "q", beats: 1 }];
 
-    // r r n -> quarter rest, then 8th note (still triplet beat)
-    if (pat === "rrn") {
-      const out = [
-        { kind: "rest", dur: "q", beats: 2 / 3 },
-        { kind: "note", dur: "8", beats: 1 / 3 },
-      ];
-      out._tuplet = beat._tuplet;
-      return out;
-    }
-
-    // n r r -> collapse to a plain quarter note (drop tuplet entirely)
-    if (pat === "nrr") {
-      return [{ kind: "note", dur: "q", beats: 1 }];
-    }
-
-    // n r n -> quarter note, then 8th note (still triplet beat)
-    if (pat === "nrn") {
-      const out = [
-        { kind: "note", dur: "q", beats: 2 / 3 },
-        { kind: "note", dur: "8", beats: 1 / 3 },
-      ];
-      out._tuplet = beat._tuplet;
-      return out;
-    }
-
-    // n n r and r n n: leave as-is (no merging rests into notes here)
-    return beat;
+  // r n r -> 8th rest, then quarter note (KEEP tuplet)
+  if (pat === "rnr") {
+    const out = [
+      { kind: "rest", dur: "8", beats: 1 / 3 },
+      { kind: "note", dur: "q", beats: 2 / 3 },
+    ];
+    out._tuplet = beat._tuplet;
+    return out;
   }
+
+  // r r n -> quarter rest, then 8th note (KEEP tuplet)
+  if (pat === "rrn") {
+    const out = [
+      { kind: "rest", dur: "q", beats: 2 / 3 },
+      { kind: "note", dur: "8", beats: 1 / 3 },
+    ];
+    out._tuplet = beat._tuplet;
+    return out;
+  }
+
+  // n r n -> quarter note, then 8th note (KEEP tuplet)
+  if (pat === "nrn") {
+    const out = [
+      { kind: "note", dur: "q", beats: 2 / 3 },
+      { kind: "note", dur: "8", beats: 1 / 3 },
+    ];
+    out._tuplet = beat._tuplet;
+    return out;
+  }
+
+  return beat;
+}
+
 
   function generateExercise({ measures, restPct, allowTriplets }) {
     const out = [];
@@ -169,7 +314,10 @@
       const beats = [];
       for (let b = 0; b < 4; b++) {
         let beat = pickBeatPattern({ restPct, allowTriplets });
+        beat = normalizeSixteenthGridBeat(beat);
+        beat = normalizeEighthRestEighth(beat);
         beat = absorbRestsInBeat(beat);
+        beat = normalizeEighthRestEighth(beat);
         beat = collapseAllRestBeatToQuarter(beat);
         beat = mergeTripletBeatClean(beat);
         beats.push(beat);
@@ -183,8 +331,8 @@
   function makeStaveNote(flow, elem) {
     const isRest = elem.kind === "rest";
 
-    // Base durations only: "q" | "8" | "16"
-    const base = elem.dur; 
+    // Base durations only: "q" | "8" | "16"  (dots are attached as modifiers)
+    const base = elem.dur;
     const duration = isRest ? (base + "r") : base;
 
     const note = new flow.StaveNote({
@@ -195,12 +343,14 @@
 
     if (isRest) note.setKeyLine(0, 3);
 
-    // Apply dots (dotted 8th / dotted quarter)
     const dots = Math.max(0, Number(elem.dots || 0));
     if (dots > 0) {
-      for (let i = 0; i < dots; i++) {
-        if (typeof note.addDotToAll === "function") note.addDotToAll();
-        else if (typeof note.addDot === "function") note.addDot(0);
+      if (flow.Dot && typeof flow.Dot.buildAndAttach === "function") {
+        for (let i = 0; i < dots; i++) flow.Dot.buildAndAttach([note], { all: true });
+      } else if (typeof note.addDotToAll === "function") {
+        for (let i = 0; i < dots; i++) note.addDotToAll();
+      } else if (typeof note.addDot === "function") {
+        for (let i = 0; i < dots; i++) note.addDot(0);
       }
     }
 
@@ -219,6 +369,24 @@
       notes.push(...vfNotes);
 
       const isTripletBeat = !!beat._tuplet;
+
+      // tag triplet rests using the MODEL (reliable)
+      if (isTripletBeat) {
+        for (let i = 0; i < beat.length; i++) {
+          if (beat[i]?.kind === "rest") vfNotes[i].__tripletRest = true;
+        }
+      }
+
+      if (isTripletBeat) {
+        for (let i = 0; i < vfNotes.length; i++) {
+          const n = vfNotes[i];
+          if (n && typeof n.isRest === "function" && n.isRest()) {
+            n.setKeyLine?.(0, 3);     // same line you use elsewhere
+            n.setYShift?.(-6);        // if it moves the wrong way, flip to +6
+          }
+        }
+      }
+
       if (isTripletBeat) {
         tuplets.push(new flow.Tuplet(vfNotes, {
           ...beat._tuplet,
@@ -234,24 +402,15 @@
       let groupDur = null; // "8" or "16"
 
       function flushGroup() {
-        if (group.length >= 2 && groupDur) {
-          if (groupDur === "8") {
-            group.forEach((n) => n.setStemDirection(flow.Stem.UP));
-            const beam = new flow.Beam(group, false);
-            if (beam.setBeamDirection) beam.setBeamDirection(flow.Stem.UP);
-            beams.push(beam);
-          } else if (groupDur === "16") {
-            // Force stems UP before auto-beaming tries to decide for us
-            group.forEach((n) => n.setStemDirection(flow.Stem.UP));
-
-            flow.Beam.generateBeams(group, {
-              stem_direction: flow.Stem.UP,
-              maintain_stem_directions: true,
-            }).forEach((b) => {
-              if (b.setBeamDirection) b.setBeamDirection(flow.Stem.UP);
-              beams.push(b);
-            });
-          }
+        if (group.length >= 2) {
+          group.forEach((n) => n.setStemDirection(flow.Stem.UP));
+          flow.Beam.generateBeams(group, {
+            stem_direction: flow.Stem.UP,
+            maintain_stem_directions: true,
+          }).forEach((b) => {
+            if (b.setBeamDirection) b.setBeamDirection(flow.Stem.UP);
+            beams.push(b);
+          });
         }
         group = [];
         groupDur = null;
@@ -263,7 +422,7 @@
 
         const isNote = elem.kind === "note";
         const isTuplet = !!beat._tuplet; // whole beat is tuplet
-        const isBeamable8 = !isTuplet && elem.dur === "8" && !elem.dots;
+        const isBeamable8 = !isTuplet && elem.dur === "8";   // allow dotted 8ths to beam
         const isBeamable16 = !isTuplet && elem.dur === "16";
 
         if (isNote && (isBeamable8 || isBeamable16)) {
@@ -319,27 +478,21 @@
     const pack = buildMeasure(flow, measureModel);
 
     const voice = new flow.Voice({ num_beats: 4, beat_value: 4 });
-    voice.setStrict(true);
-    voice.addTickables(pack.notes);
+voice.setStrict(false);
+voice.addTickables(pack.notes);
 
-    const fmt = new flow.Formatter().joinVoices([voice]);
+const BASE = 170;
 
-    // Correct API order:
-    // - preCalculateMinTotalWidth([voice]) computes and caches min width
-    // - getMinTotalWidth() ONLY works after that (and takes NO args)
-    let min = 0;
+    const PER_NOTE = 18;                    // each tickable needs room
+    const PER_TUPLET = 26;                  // bracket/number room
+    const firstPad = isFirstMeasure ? 70 : 0;
 
-    if (typeof fmt.preCalculateMinTotalWidth === "function") {
-      min = fmt.preCalculateMinTotalWidth([voice]);
-    } else {
-      // fallback: run a 0-width format pass (sets minTotalWidth internally)
-      fmt.format([voice], 0);
-      min = fmt.getMinTotalWidth();
-    }
+    const minW = BASE
+      + pack.notes.length * PER_NOTE
+      + pack.tuplets.length * PER_TUPLET
+      + firstPad;
 
-    const PAD = 40 + pack.tuplets.length * 18 + (isFirstMeasure ? 70 : 0);
-
-    return { ...pack, voice, minW: Math.ceil(min + PAD) };
+    return { ...pack, voice, minW: Math.ceil(minW) };
   }
 
   function estimateMeasureMinWidth(measureModel) {
@@ -510,7 +663,24 @@ setStatus(`Generated ${exercise.length} measures.`);
         const pack = packs[m];
         const { beams, tuplets, voice } = pack;
 
-        const formatter = new flow.Formatter().joinVoices([voice]);
+        // Make VF4 formatter happy: everything must know its ctx + stave
+        if (voice.setContext) voice.setContext(ctx);
+        if (voice.setStave) voice.setStave(stave);
+
+        pack.notes.forEach((n) => {
+          n.setContext(ctx);
+          if (n.setStave) n.setStave(stave);
+        });
+
+        // force triplet rests to sit on the same line as normal rests
+        const TRIPLET_REST_NUDGE_PX = 0; // set to 4 or 6 if still too high
+        pack.notes.forEach((n) => {
+          if (!n?.__tripletRest) return;
+          const y = (typeof stave.getYForLine === "function" ? stave.getYForLine(3) : null);
+          if (y != null && typeof n.setYs === "function") n.setYs([y + TRIPLET_REST_NUDGE_PX]);
+        });
+
+        const formatter = new flow.Formatter();
 
         // Format using the *real* note area inside this stave (prevents overflow)
         if (typeof formatter.formatToStave === "function") {
@@ -521,6 +691,30 @@ setStatus(`Generated ${exercise.length} measures.`);
           const avail = Math.max(60, (endX - startX) - 10);
           formatter.format([voice], avail);
         }
+
+        // Force triplet rests to sit like normal rests (AFTER formatting, BEFORE draw)
+        const TRIPLET_REST_LINE = 3;    // your normal rest line
+        const TRIPLET_REST_NUDGE = 6;   // +down (try 4, 6, 8)
+
+        pack.notes.forEach((n) => {
+          if (!n?.__tripletRest) return;
+
+          // force staff lines
+          n.setKeyLine?.(0, TRIPLET_REST_LINE);
+
+          // hard override y
+          const y = (typeof stave.getYForLine === "function")
+            ? stave.getYForLine(TRIPLET_REST_LINE) + TRIPLET_REST_NUDGE
+            : null;
+
+          if (y != null) {
+            if (typeof n.setYs === "function") n.setYs([y]);
+            else n.ys = [y]; // fallback
+          }
+
+          // extra fallback used by some VF builds
+          if (n.render_options) n.render_options.y_shift = TRIPLET_REST_NUDGE;
+        });
 
         voice.draw(ctx, stave);
         beams.forEach((b) => b.setContext(ctx).draw());
@@ -579,10 +773,11 @@ setStatus(`Generated ${exercise.length} measures.`);
     const secondsPerBeat = 60 / tempo;
 
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.resume?.().catch(() => {});
     isPlaying = true;
     playBtn.disabled = true;
     stopBtn.disabled = false;
-    setStatus("Playing…");
+    setStatus("Playing");
 
     const { events, totalBeats } = flattenEvents(currentExercise);
     const startTime = audioCtx.currentTime + 0.06;
@@ -625,7 +820,7 @@ setStatus(`Generated ${exercise.length} measures.`);
     isPlaying = false;
     playBtn.disabled = false;
     stopBtn.disabled = true;
-    setStatus("Ready.");
+    setStatus("Ready");
   }
 
   // ---------- Wire up ----------
@@ -639,15 +834,22 @@ setStatus(`Generated ${exercise.length} measures.`);
 
       currentExercise = generateExercise({ measures, restPct, allowTriplets });
       render(currentExercise);
-      setStatus(`Generated ${measures} measures.`);
+      setStatus(`Generated ${measures} Measures`);
     } catch (e) {
       showError(e);
       setStatus("Render failed (see error box).");
     }
   }
 
-  tempoEl.addEventListener("input", () => (tempoValEl.textContent = tempoEl.value));
-  restsEl.addEventListener("input", () => (restsValEl.textContent = restsEl.value));
+  tempoEl.addEventListener("input", () => {
+    tempoValEl.textContent = tempoEl.value;
+    syncSliderFill(tempoEl);
+  });
+
+  restsEl.addEventListener("input", () => {
+    restsValEl.textContent = restsEl.value;
+    syncSliderFill(restsEl);
+  });
 
   regenBtn.addEventListener("click", regenerate);
   playBtn.addEventListener("click", play);
@@ -658,7 +860,11 @@ setStatus(`Generated ${exercise.length} measures.`);
     try { render(currentExercise); } catch (e) { showError(e); }
   });
 
+  // init UI
   tempoValEl.textContent = tempoEl.value;
   restsValEl.textContent = restsEl.value;
+  syncSliderFill(tempoEl);
+  syncSliderFill(restsEl);
+
   regenerate();
 })();
