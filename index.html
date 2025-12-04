@@ -11,11 +11,6 @@
 <body>
   <div class="wrap">
     <header class="top">
-      <div>
-        <div class="title">RDM Sightreading Rhythm Generator</div>
-        <div class="sub">VexFlow notation + WebAudio playback</div>
-      </div>
-
       <div class="controls">
         <label class="field">
           <span>Measures</span>
@@ -23,36 +18,68 @@
         </label>
 
         <label class="field">
-          <span>Tempo</span>
-          <input id="tempo" type="range" min="40" max="220" value="120" />
-          <span class="pill"><span id="tempoVal">120</span> bpm</span>
+<div class="fieldHead">
+  <span class="fieldLabel">Tempo</span>
+  <span class="fieldValue"><span id="tempoVal">120</span> bpm</span>
+</div>
+<input id="tempo" class="slider-fill" type="range" min="40" max="220" value="120" />
         </label>
 
         <label class="field">
-          <span>Rests</span>
-          <input id="rests" type="range" min="0" max="60" value="15" />
-          <span class="pill"><span id="restsVal">15</span>%</span>
+<div class="fieldHead">
+  <span class="fieldLabel">Rests</span>
+  <span class="fieldValue"><span id="restsVal">15</span>%</span>
+</div>
+<input id="rests" class="slider--orange" type="range" min="0" max="60" value="15" />
         </label>
-
-        <label class="check">
-          <input id="allowTriplets" type="checkbox" checked />
-          <span>Allow triplets</span>
-        </label>
-
         <div class="btnRow">
           <button id="regen" class="btn primary">Regenerate</button>
           <button id="play" class="btn">Play</button>
           <button id="stop" class="btn danger" disabled>Stop</button>
         </div>
+
+<div id="status" class="statusChip statusChip--ok">
+  <span class="dot" aria-hidden="true"></span>
+  <span class="statusText">Ready.</span>
+</div>
       </div>
     </header>
 
     <main class="main">
-      <div id="status" class="status">Ready.</div>
       <div id="error" class="error" hidden></div>
       <div id="scoreWrap" class="scoreWrap">
-        <canvas id="score" class="score"></canvas>
-      </div>
+  <canvas id="score" class="score"></canvas>
+</div>
+
+<div class="optionsCard">
+  <label class="rhythmTile" title="8th Notes">
+    <input id="allow8ths" type="checkbox" checked />
+    <span class="rhythmTick" aria-hidden="true"></span>
+    <span class="rhythmIcon" aria-hidden="true">
+      <canvas id="eighthIcon" class="rhythmCanvas" width="160" height="90"></canvas>
+    </span>
+    <span class="srOnly">8th Notes</span>
+  </label>
+
+  <label class="rhythmTile" title="16th Notes">
+    <input id="allow16ths" type="checkbox" checked />
+    <span class="rhythmTick" aria-hidden="true"></span>
+    <span class="rhythmIcon" aria-hidden="true">
+      <canvas id="sixteenthIcon" class="rhythmCanvas" width="160" height="90"></canvas>
+    </span>
+    <span class="srOnly">16th Notes</span>
+  </label>
+
+  <label class="rhythmTile" title="Triplets">
+    <input id="allowTriplets" type="checkbox" checked />
+    <span class="rhythmTick" aria-hidden="true"></span>
+    <span class="rhythmIcon" aria-hidden="true">
+      <canvas id="tripletIcon" class="rhythmCanvas" width="160" height="90"></canvas>
+    </span>
+    <span class="srOnly">Triplets</span>
+  </label>
+</div>
+
     </main>
   </div>
 
