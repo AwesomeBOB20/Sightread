@@ -4,6 +4,8 @@
 :root{
   --black:#000; --white:#fff;
   --bg:#1c1c1c;
+--section-gap:20px;
+
 
   /* Oranges */
   --orange:#d35400;
@@ -33,14 +35,16 @@ body{
 
 /* === Layout === */
 .wrap{
-  width:92%;
+  width:100%;
   max-width:1200px;  /* allow score area to be wider than the top card */
-  margin:16px auto;
+  margin:50px auto;
 }
 
 .top{
   width:100%;
+  position:relative;
   margin:0 auto;
+  margin-bottom: var(--section-gap);
   background:var(--blue);
   border:2px solid var(--black);
   border-radius:12px;
@@ -84,6 +88,27 @@ body{
   font-size:1.1rem;
 }
 
+.fieldHead{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:12px;
+  width:100%;
+}
+
+.fieldLabel{
+  color:#fff;
+  font-size:1.05rem;
+}
+
+.fieldValue{
+  color:#fff;
+  font-size:1.05rem;
+  font-weight:700;
+  white-space:nowrap;
+}
+
+
 /* Inputs */
 .field input[type="number"]{
   width:100%;
@@ -123,8 +148,41 @@ body{
   padding:10px 12px;
   border:2px solid var(--black);
   border-radius:12px;
-  background:rgba(0,0,0,.08);
+  background:var(--blue);
 }
+
+.check--compact{
+  width:auto;
+  padding:10px 14px;
+  border-radius:999px;
+}
+
+/* Triplets chip — default (not selected) */
+.check--compact{
+  border-color:#fff;   /* override black border */
+  color:#fff;
+}
+
+.check--compact span{
+  color:inherit;
+}
+
+.check--compact input{
+  accent-color:#fff;   /* checkbox is white when off */
+}
+
+/* Triplets chip — selected */
+.check--compact:has(input:checked){
+  border-color: var(--purple);
+  color: var(--purple);
+  box-shadow: 0 0 0 2px rgba(150,49,141,.35);
+}
+
+.check--compact:has(input:checked) input{
+  accent-color: var(--purple);
+}
+
+
 .check span{ font-size:1.05rem; }
 
 /* === Buttons (matched 44px) === */
@@ -160,14 +218,56 @@ body{
 .btn.danger{ background:var(--blue-dim); }
 .btn.danger:hover{ background:var(--blue-d); }
 
+
+.statusChip{
+  position:absolute;
+  top:12px;
+  right:12px;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  border:2px solid var(--black);
+  border-radius:999px;
+  padding:8px 12px;
+  background:#fff;
+  color:#000;
+  font-size:.95rem;
+  line-height:1;
+  white-space:nowrap;
+}
+
+.statusChip .dot{
+  width:10px;
+  height:10px;
+  border-radius:50%;
+  border:2px solid var(--black);
+  background:var(--blue);
+}
+
+/* states */
+.statusChip--ok .dot{ background:var(--blue); }
+.statusChip--play .dot{ background:var(--orange); }
+.statusChip--warn .dot{ background:var(--orange); }
+
+/* keep it from overlaying on small screens */
+@media (max-width:700px){
+  .statusChip{
+    position:static;
+    align-self:center;
+    margin-top:12px;
+  }
+}
+
+
 /* === Slider (exact thumb + track style you like) === */
 .field input[type="range"]{
   --thumb:24px;
+  --fill: var(--purple); /* default fill */
   width:100%;
   height:16px;
   border-radius:6px;
   box-shadow:inset 0 0 0 2px var(--black);
-  background:linear-gradient(to right,var(--purple) 0 0) no-repeat var(--bg-pos,0/0%), var(--gray-1);
+  background:linear-gradient(to right,var(--fill) 0 0) no-repeat var(--bg-pos,0/0%), #fff;
   -webkit-appearance:none;
   appearance:none;
   outline:none;
@@ -181,6 +281,11 @@ body{
   border:2px solid var(--black);
   cursor:pointer;
 }
+
+.field input[type="range"].slider-fill{ --fill: var(--purple); }
+.field input[type="range"].slider--orange{ --fill: var(--orange); }
+
+
 .field input[type="range"]::-moz-range-thumb{
   width:var(--thumb);
   height:var(--thumb);
@@ -196,13 +301,13 @@ body{
 .is-ios .field input[type="range"]::-webkit-slider-thumb { pointer-events:auto; }
 
 /* === Main area === */
-.main{ margin-top:16px; }
+.main{ margin-top:0; }
 
 .status{
   color:#fff;
   opacity:.95;
   font-size:1rem;
-  margin:0 0 10px 2px;
+  margin:0 0 var(--section-gap) 2px;
   text-align:left;
 }
 
@@ -218,12 +323,24 @@ body{
 .scoreWrap{
   width:min(100%, 1200px);
   margin:0 auto;                 /* centered */
+  margin-bottom: var(--section-gap);
   border:2px solid var(--black);
   border-radius:12px;
   background:var(--blue);
   padding:12px;
   overflow:hidden;               /* shouldn’t clip anymore once JS matches sizes */
   display:flex;                  /* centers canvas if it’s narrower */
+  justify-content:center;
+}
+
+.optionsCard{
+  width:min(100%, 1200px);
+  margin:0 auto;
+  border:2px solid var(--black);
+  border-radius:12px;
+  background:var(--blue);  
+  padding:12px;
+  display:flex;
   justify-content:center;
 }
 
