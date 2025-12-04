@@ -10,6 +10,8 @@
   const restsEl = $("rests");
   const restsValEl = $("restsVal");
   const allowTripletsEl = $("allowTriplets");
+  const allow8thsEl = $("allow8ths");
+  const allow16thsEl = $("allow16ths");
   const regenBtn = $("regen");
   const playBtn = $("play");
   const stopBtn = $("stop");
@@ -26,7 +28,18 @@
     input.style.setProperty("--bg-pos", `0 0 / ${pct}% 100%`);
   }
 
-  function setStatus(msg) { statusEl.textContent = msg; }
+  function setStatus(msg, mode = "ok") {
+    const textEl = statusEl?.querySelector?.(".statusText");
+    if (textEl) textEl.textContent = msg;
+    else statusEl.textContent = msg;
+
+    statusEl.classList.remove("statusChip--ok", "statusChip--play", "statusChip--warn");
+    statusEl.classList.add(
+      mode === "play" ? "statusChip--play" :
+      mode === "warn" ? "statusChip--warn" :
+      "statusChip--ok"
+    );
+  }
   function showError(err) {
     errorEl.hidden = false;
     errorEl.textContent = String(err && err.stack ? err.stack : err);
@@ -40,6 +53,126 @@
   function VF() {
     if (window.Vex && window.Vex.Flow) return window.Vex.Flow;
     throw new Error("VexFlow did not load. Check your internet / CDN.");
+  }
+
+  // --- Triplet tile icon (VexFlow -> canvas) ---
+  // --- Rhythm tile icons (VexFlow -> canvas), NO STAFF LINES / NO BARLINES ---
+  function renderRhythmIcon(canvasId, recipe) {
+    try {
+      const flow = VF();
+      const c = $(canvasId);
+      if (!(c instanceof HTMLCanvasElement)) return;
+
+      const W = c.width || 160;
+      const H = c.height || 90;
+
+      const renderer = new flow.Renderer(c, flow.Renderer.Backends.CANVAS);
+      renderer.resize(W, H);
+
+      const ctx = renderer.getContext();
+      ctx.setFont("Arial", 10, "");
+
+      const raw = ctx.context || ctx;
+      raw.clearRect(0, 0, W, H);
+      raw.fillStyle = "#000";
+      raw.strokeStyle = "#000";
+
+      // Make a stave used ONLY for spacing, but do NOT draw it.
+      // Also make it "invisible" so even if something tries to draw, it won't show.
+      const stave = new flow.Stave(10, 18, W - 20);
+      stave.setStyle?.({ strokeStyle: "rgba(0,0,0,0)", fillStyle: "rgba(0,0,0,0)" });
+      stave.setContext(ctx);
+
+      // Build notes
+      const notes = recipe.notes.map((n) => {
+        const isRest = !!n.rest;
+        const dur = n.dur + (isRest ? "r" : "");
+        const sn = new flow.StaveNote({
+          clef: "percussion",
+          keys: isRest ? ["b/4"] : ["c/5"],
+          duration: dur,
+        });
+
+        if (isRest) sn.setKeyLine(0, 3);
+
+        const dots = Number(n.dots || 0);
+        if (dots > 0) {
+          for (let i = 0; i < dots; i++) {
+            if (flow.Dot?.buildAndAttach) flow.Dot.buildAndAttach([sn], { all: true });
+            else if (sn.addDotToAll) sn.addDotToAll();
+            else if (sn.addDot) sn.addDot(0);
+          }
+        }
+
+        sn.setStemDirection(flow.Stem.UP).setStemLength(26);
+        sn.setContext(ctx);
+        sn.setStave?.(stave);
+        return sn;
+      });
+
+      const voice = new flow.Voice({ num_beats: recipe.num_beats, beat_value: recipe.beat_value })
+        .setStrict(false);
+      voice.addTickables(notes);
+      voice.setContext?.(ctx);
+      voice.setStave?.(stave);
+
+      const formatter = new flow.Formatter();
+      formatter.joinVoices([voice]);
+
+      // Format into the *icon* width (not “toStave” since we’re not drawing it)
+      formatter.format([voice], W - 30);
+
+      // Optional beam
+      let beamObj = null;
+      if (recipe.beam) {
+        beamObj = new flow.Beam(notes, false);
+        beamObj.setBeamDirection?.(flow.Stem.UP);
+      }
+
+      // Optional tuplet
+      let tupletObj = null;
+      if (recipe.tuplet) {
+        tupletObj = new flow.Tuplet(notes, {
+          num_notes: recipe.tuplet.num_notes,
+          notes_occupied: recipe.tuplet.notes_occupied,
+          bracketed: true,
+          ratioed: false,
+        });
+      }
+
+      // Draw just the musical elements (no stave)
+      voice.draw(ctx, stave);
+      beamObj?.setContext(ctx).draw();
+      tupletObj?.setContext(ctx).draw();
+    } catch (e) {
+      console.warn("Icon render failed:", canvasId, e);
+    }
+  }
+
+  function safeRenderAllIcons() {
+    // 8ths: 2x 8th (1 beat)
+    renderRhythmIcon("eighthIcon", {
+      num_beats: 1, beat_value: 4,
+      beam: true,
+      notes: [{ dur: "8" }, { dur: "8" }],
+    });
+
+    // 16ths: 4x 16th (1 beat)
+    renderRhythmIcon("sixteenthIcon", {
+      num_beats: 1, beat_value: 4,
+      beam: true,
+      notes: [{ dur: "16" }, { dur: "16" }, { dur: "16" }, { dur: "16" }],
+    });
+
+
+
+    // triplets: 3x 8th in the time of 2 8ths (1 beat = 2/4 in VF terms here)
+    renderRhythmIcon("tripletIcon", {
+      num_beats: 2, beat_value: 4,
+      beam: true,
+      tuplet: { num_notes: 3, notes_occupied: 2 },
+      notes: [{ dur: "8" }, { dur: "8" }, { dur: "8" }],
+    });
   }
 
   // --- Scratch VF context (required for dotted modifiers during width calc) ---
@@ -60,58 +193,36 @@
     return Math.random() * 100 < pct;
   }
 
-  function pickBeatPattern({ restPct, allowTriplets }) {
-    // Added dotted-8th patterns inside ONE beat (0.75 + 0.25 = 1.0)
-    const options = allowTriplets
-      ? ["q", "8s", "16s", "8t", "d8_16", "16_d8r", "d8r_16"]
-      : ["q", "8s", "16s", "d8_16", "16_d8r", "d8r_16"];
+  function pickBeatPattern({ restPct, allow8ths, allow16ths, allowTriplets }) {
+    // We are NOT changing any rhythm rules — only which families can be selected.
 
-    const r = Math.random();
-    let choice;
+    // Weighted pool (quarter is always allowed as a safe fallback)
+    const pool = [
+      { id: "q", w: 0.18 },
+    ];
+    if (allow8ths)     pool.push({ id: "8s", w: 0.38 });
+    if (allow16ths)    pool.push({ id: "16s", w: 0.34 });
+    if (allowTriplets) pool.push({ id: "8t", w: 0.20 });
 
-    if (allowTriplets) {
-      // includes triplets + dotted 8th variations
-      choice =
-        r < 0.28 ? "8s" :
-        r < 0.50 ? "16s" :
-        r < 0.62 ? "q"  :
-        r < 0.74 ? "8t" :
-        r < 0.84 ? "d8_16" :
-        r < 0.93 ? "16_d8r" :
-                   "d8r_16";
-    } else {
-      choice =
-        r < 0.34 ? "8s" :
-        r < 0.62 ? "16s" :
-        r < 0.78 ? "q"  :
-        r < 0.89 ? "d8_16" :
-        r < 0.95 ? "16_d8r" :
-                   "d8r_16";
+    // pick from pool
+    const totalW = pool.reduce((s, x) => s + x.w, 0) || 1;
+    let r = Math.random() * totalW;
+    let choice = pool[0].id;
+    for (const item of pool) {
+      r -= item.w;
+      if (r <= 0) { choice = item.id; break; }
     }
 
     const make = (dur, beats, dots = 0) => ({
       kind: chance(restPct) ? "rest" : "note",
-      dur,
-      dots,
-      beats,
+      dur, dots, beats,
     });
-    const makeNote = (dur, beats, dots = 0) => ({ kind: "note", dur, dots, beats });
-    const makeRest = (dur, beats, dots = 0) => ({ kind: "rest", dur, dots, beats });
 
     if (choice === "q") return [make("q", 1)];
     if (choice === "8s") return [make("8", 0.5), make("8", 0.5)];
     if (choice === "16s") return [make("16", 0.25), make("16", 0.25), make("16", 0.25), make("16", 0.25)];
 
-    // DOTTED-8 VARIATIONS YOU REQUESTED (each totals 1 beat)
-    // 16 16 r r  -> 16 d8r  (interpreted as: 16 + dotted8 REST)
-    if (choice === "16_d8r") return [makeNote("16", 0.25), makeRest("8", 0.75, 1)];
-
-    // r r r 16  -> d8r 16
-    if (choice === "d8r_16") return [makeRest("8", 0.75, 1), makeNote("16", 0.25)];
-
-    // 16 r r 16 -> d8 16 (merge rests into the dotted 8)
-    if (choice === "d8_16") return [makeNote("8", 0.75, 1), makeNote("16", 0.25)];
-
+    // Triplets unchanged
     const t = [make("8", 1 / 3), make("8", 1 / 3), make("8", 1 / 3)];
     t._tuplet = { num_notes: 3, notes_occupied: 2 };
     return t;
@@ -308,12 +419,12 @@
 }
 
 
-  function generateExercise({ measures, restPct, allowTriplets }) {
+  function generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets }) {
     const out = [];
     for (let m = 0; m < measures; m++) {
       const beats = [];
       for (let b = 0; b < 4; b++) {
-        let beat = pickBeatPattern({ restPct, allowTriplets });
+        let beat = pickBeatPattern({ restPct, allow8ths, allow16ths, allowTriplets });
         beat = normalizeSixteenthGridBeat(beat);
         beat = normalizeEighthRestEighth(beat);
         beat = absorbRestsInBeat(beat);
@@ -830,9 +941,11 @@ setStatus(`Generated ${exercise.length} measures.`);
 
       const measures = Math.max(1, Math.min(32, Math.round(Number(measuresEl.value) || 8)));
       const restPct = Math.max(0, Math.min(60, Math.round(Number(restsEl.value) || 0)));
+      const allow8ths = !!allow8thsEl?.checked;
+      const allow16ths = !!allow16thsEl?.checked;
       const allowTriplets = !!allowTripletsEl.checked;
 
-      currentExercise = generateExercise({ measures, restPct, allowTriplets });
+      currentExercise = generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets });
       render(currentExercise);
       setStatus(`Generated ${measures} Measures`);
     } catch (e) {
@@ -866,5 +979,6 @@ setStatus(`Generated ${exercise.length} measures.`);
   syncSliderFill(tempoEl);
   syncSliderFill(restsEl);
 
+  safeRenderAllIcons();
   regenerate();
 })();
