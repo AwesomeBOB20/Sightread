@@ -935,40 +935,51 @@
   }
 
   // --- Audio Scheduler ---
+// --- Audio Scheduler ---
   function scheduleBeats(startBeatIndex, startTime) {
-      nextBeatIndex = startBeatIndex;
-      nextBeatTime = startTime;
-      
-      const TICK_MS = 25;
-      const scheduleChunk = () => {
-        if (!isPlaying || isPaused || !audioCtx) return;
+    nextBeatIndex = startBeatIndex;
+    nextBeatTime = startTime;
 
-        // READ TEMPO LIVE (for upcoming beats)
-        const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
-        const spb = 60 / tempoNow;
-        const horizon = audioCtx.currentTime + Math.max(0.8, spb * 2.5);
+    // 1. Run the check loop more frequently (15ms instead of 25ms)
+    //    to handle the tighter tolerance.
+    const TICK_MS = 15;
 
-        while (nextBeatTime < horizon && nextBeatIndex < totalBeatsScheduled) {
-          const isDownbeat = (nextBeatIndex % MEASURE_BEATS) === 0;
-          
-          // Metronome Click (Always plays, even during count-off)
-          clickAt(nextBeatTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.10 : 0.06, 0.025);
+    const scheduleChunk = () => {
+      if (!isPlaying || isPaused || !audioCtx) return;
 
-          // Rhythms (Only play if we are past the count-off)
-          if (nextBeatIndex >= 0) {
-            const beatNotes = eventsByBeat[nextBeatIndex] || [];
-            for (const n of beatNotes) {
-              clickAt(nextBeatTime + n.offset * spb, 650, 0.07, 0.03);
-            }
+      const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+      const spb = 60 / tempoNow;
+
+      // 2. TIGHTER LOOKAHEAD:
+      //    Instead of looking ahead 1-2 seconds (spb * 2.5), we only look 
+      //    ahead 0.15 seconds (150ms). This prevents the scheduler from 
+      //    "locking in" the count-off beats at the old tempo.
+      //    It forces the engine to use the LIVE tempo for every single click.
+      const horizon = audioCtx.currentTime + 0.15;
+
+      while (nextBeatTime < horizon && nextBeatIndex < totalBeatsScheduled) {
+        const isDownbeat = (nextBeatIndex % MEASURE_BEATS) === 0;
+
+        // Metronome Click
+        clickAt(nextBeatTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.10 : 0.06, 0.025);
+
+        // Rhythms (skip if in count-off)
+        if (nextBeatIndex >= 0) {
+          const beatNotes = eventsByBeat[nextBeatIndex] || [];
+          for (const n of beatNotes) {
+            clickAt(nextBeatTime + n.offset * spb, 650, 0.07, 0.03);
           }
-
-          nextBeatIndex += 1;
-          nextBeatTime += spb;
         }
-      };
 
-      schedulerId = window.setInterval(scheduleChunk, TICK_MS);
-      scheduleChunk();
+        nextBeatIndex += 1;
+        // 3. This increment now happens "Just In Time" using the 
+        //    latest `spb` from the slider.
+        nextBeatTime += spb;
+      }
+    };
+
+    schedulerId = window.setInterval(scheduleChunk, TICK_MS);
+    scheduleChunk();
   }
 
   function startMusic() {
