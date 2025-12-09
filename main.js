@@ -19,6 +19,12 @@
   const errorEl = $("error");
   const scoreEl = $("score");
   const scoreWrapEl = $("scoreWrap");
+  const playheadEl = $("playhead");
+  const playBtnText = $("playBtnText");
+  const progressBar = $("progressBar");
+
+  const SHEET_DENSITY = 0.82; 
+  const END_BUFFER_BEATS = 0.25; 
 
   function syncSliderFill(input) {
     const min = Number(input.min || 0);
@@ -55,8 +61,7 @@
     throw new Error("VexFlow did not load. Check your internet / CDN.");
   }
 
-  // --- Triplet tile icon (VexFlow -> canvas) ---
-  // --- Rhythm tile icons (VexFlow -> canvas), NO STAFF LINES / NO BARLINES ---
+  // --- Rhythm tile icons (VexFlow -> canvas) ---
   function renderRhythmIcon(canvasId, recipe) {
     try {
       const flow = VF();
@@ -77,13 +82,10 @@
       raw.fillStyle = "#000";
       raw.strokeStyle = "#000";
 
-      // Make a stave used ONLY for spacing, but do NOT draw it.
-      // Also make it "invisible" so even if something tries to draw, it won't show.
       const stave = new flow.Stave(10, 18, W - 20);
       stave.setStyle?.({ strokeStyle: "rgba(0,0,0,0)", fillStyle: "rgba(0,0,0,0)" });
       stave.setContext(ctx);
 
-      // Build notes
       const notes = recipe.notes.map((n) => {
         const isRest = !!n.rest;
         const dur = n.dur + (isRest ? "r" : "");
@@ -118,18 +120,14 @@
 
       const formatter = new flow.Formatter();
       formatter.joinVoices([voice]);
-
-      // Format into the *icon* width (not “toStave” since we’re not drawing it)
       formatter.format([voice], W - 30);
 
-      // Optional beam
       let beamObj = null;
       if (recipe.beam) {
         beamObj = new flow.Beam(notes, false);
         beamObj.setBeamDirection?.(flow.Stem.UP);
       }
 
-      // Optional tuplet
       let tupletObj = null;
       if (recipe.tuplet) {
         tupletObj = new flow.Tuplet(notes, {
@@ -140,7 +138,6 @@
         });
       }
 
-      // Draw just the musical elements (no stave)
       voice.draw(ctx, stave);
       beamObj?.setContext(ctx).draw();
       tupletObj?.setContext(ctx).draw();
@@ -150,23 +147,18 @@
   }
 
   function safeRenderAllIcons() {
-    // 8ths: 2x 8th (1 beat)
     renderRhythmIcon("eighthIcon", {
       num_beats: 1, beat_value: 4,
       beam: true,
       notes: [{ dur: "8" }, { dur: "8" }],
     });
 
-    // 16ths: 4x 16th (1 beat)
     renderRhythmIcon("sixteenthIcon", {
       num_beats: 1, beat_value: 4,
       beam: true,
       notes: [{ dur: "16" }, { dur: "16" }, { dur: "16" }, { dur: "16" }],
     });
 
-
-
-    // triplets: 3x 8th in the time of 2 8ths (1 beat = 2/4 in VF terms here)
     renderRhythmIcon("tripletIcon", {
       num_beats: 2, beat_value: 4,
       beam: true,
@@ -175,36 +167,17 @@
     });
   }
 
-  // --- Scratch VF context (required for dotted modifiers during width calc) ---
-  let _scratchVFContext = null;
-  function getScratchVFContext(flow) {
-    if (_scratchVFContext) return _scratchVFContext;
-    const c = document.createElement("canvas");
-    c.width = 32; c.height = 32;
-    const r = new flow.Renderer(c, flow.Renderer.Backends.CANVAS);
-    r.resize(32, 32);
-    _scratchVFContext = r.getContext();
-    _scratchVFContext.setFont("Arial", 10, "");
-    return _scratchVFContext;
-  }
-
   // ---------- Rhythm model ----------
   function chance(pct) {
     return Math.random() * 100 < pct;
   }
 
   function pickBeatPattern({ restPct, allow8ths, allow16ths, allowTriplets }) {
-    // We are NOT changing any rhythm rules — only which families can be selected.
-
-    // Weighted pool (quarter is always allowed as a safe fallback)
-    const pool = [
-      { id: "q", w: 0.18 },
-    ];
+    const pool = [{ id: "q", w: 0.18 }];
     if (allow8ths)     pool.push({ id: "8s", w: 0.38 });
     if (allow16ths)    pool.push({ id: "16s", w: 0.34 });
     if (allowTriplets) pool.push({ id: "8t", w: 0.20 });
 
-    // pick from pool
     const totalW = pool.reduce((s, x) => s + x.w, 0) || 1;
     let r = Math.random() * totalW;
     let choice = pool[0].id;
@@ -222,13 +195,11 @@
     if (choice === "8s") return [make("8", 0.5), make("8", 0.5)];
     if (choice === "16s") return [make("16", 0.25), make("16", 0.25), make("16", 0.25), make("16", 0.25)];
 
-    // Triplets unchanged
     const t = [make("8", 1 / 3), make("8", 1 / 3), make("8", 1 / 3)];
     t._tuplet = { num_notes: 3, notes_occupied: 2 };
     return t;
   }
 
-  // --- Rest absorption (beat-level) ---
   function durFromBeats(beats) {
     const eps = 1e-6;
     if (Math.abs(beats - 1) < eps) return "q";
@@ -237,7 +208,6 @@
     return null;
   }
 
-  // --- Normalize beats into your preferred spellings ---
   function normalizeSixteenthGridBeat(beat) {
     const eps = 1e-6;
     if (!beat || beat._tuplet) return beat;
@@ -246,29 +216,17 @@
     const R = (dur, beats, dots = 0) => ({ kind: "rest", dur, beats, dots });
 
     const is16r = (e) =>
-      e &&
-      e.kind === "rest" &&
-      e.dur === "16" &&
-      Math.abs((e.beats ?? 0) - 0.25) < eps &&
-      Number(e.dots || 0) === 0;
-
+      e && e.kind === "rest" && e.dur === "16" && Math.abs((e.beats ?? 0) - 0.25) < eps && Number(e.dots || 0) === 0;
     const isPlain8 = (e) =>
-      e &&
-      (e.kind === "note" || e.kind === "rest") &&
-      e.dur === "8" &&
-      Math.abs((e.beats ?? 0) - 0.5) < eps &&
-      Number(e.dots || 0) === 0;
+      e && (e.kind === "note" || e.kind === "rest") && e.dur === "8" && Math.abs((e.beats ?? 0) - 0.5) < eps && Number(e.dots || 0) === 0;
 
-    // NEW: Fix the 3-token version you screenshotted: 16r 16r 8  -> 8r 8
     if (beat.length === 3 && is16r(beat[0]) && is16r(beat[1]) && isPlain8(beat[2])) {
       return [R("8", 0.5), beat[2].kind === "note" ? N("8", 0.5) : R("8", 0.5)];
     }
-    // (symmetry) 8 16r 16r -> 8 8r
     if (beat.length === 3 && isPlain8(beat[0]) && is16r(beat[1]) && is16r(beat[2])) {
       return [beat[0].kind === "note" ? N("8", 0.5) : R("8", 0.5), R("8", 0.5)];
     }
 
-    // Only touch "four 16th slots" beats
     if (beat.length !== 4) return beat;
     for (const e of beat) {
       if (e.dur !== "16") return beat;
@@ -278,7 +236,6 @@
 
     const pat = beat.map((e) => (e.kind === "note" ? "n" : "r")).join("");
 
-    // Your image rules:
     if (pat === "rnrr") return [R("16", 0.25), N("8", 0.75, 1)];
     if (pat === "rrrn") return [R("8", 0.75, 1), N("16", 0.25)];
     if (pat === "nrrn") return [N("8", 0.75, 1), N("16", 0.25)];
@@ -289,7 +246,6 @@
     return beat;
   }
 
-  // NEW: catch 16r 16r 8  (and 8r 16 16) even when beat isn't 4 tokens
   function normalizeEighthRestEighth(beat) {
     const eps = 1e-6;
     if (!beat || beat._tuplet) return beat;
@@ -303,18 +259,15 @@
 
     const out = beat.map((e) => ({ ...e }));
 
-    // 16r 16r X  -> 8r X
     if (out.length >= 2 && is16r(out[0]) && is16r(out[1])) {
       out.splice(0, 2, R("8", 0.5));
     }
 
-    // X 16r 16r  -> X 8r
     const L = out.length;
     if (L >= 2 && is16r(out[L - 2]) && is16r(out[L - 1])) {
       out.splice(L - 2, 2, R("8", 0.5));
     }
 
-    // 8r 16 16 -> 8r 8
     if (out.length === 3 && is8r(out[0]) && is16n(out[1]) && is16n(out[2])) {
       return [out[0], N("8", 0.5)];
     }
@@ -322,16 +275,14 @@
     return out;
   }
 
-  function absorbRestsInBeat(beat) {    // Skip tuplets entirely
+  function absorbRestsInBeat(beat) {
     if (beat && beat._tuplet) return beat;
-
     const out = beat.map((e) => ({ ...e }));
 
     for (let i = 0; i < out.length; i++) {
       const e = out[i];
       if (e.kind !== "note") continue;
 
-      // Sum consecutive rests after this note
       let j = i + 1;
       let restSum = 0;
       let hasDottedRest = false;
@@ -345,79 +296,53 @@
       const total = e.beats + restSum;
       const newDur = durFromBeats(total);
 
-      // RULE: 16th + dotted-8th REST (0.25 + 0.75) => quarter note
       if (hasDottedRest && newDur === "q") {
         e.beats = 1;
         e.dur = "q";
         e.dots = 0;
-        out.splice(i + 1, j - (i + 1)); // remove absorbed rests
+        out.splice(i + 1, j - (i + 1)); 
         continue;
       }
 
-      // Otherwise keep the old behavior (don’t absorb dotted rests)
       if (!hasDottedRest && (newDur === "8" || newDur === "q")) {
         e.beats = total;
         e.dur = newDur;
-        out.splice(i + 1, j - (i + 1)); // remove absorbed rests
+        out.splice(i + 1, j - (i + 1));
       }
     }
-
     return out;
   }
-
-
 
   function collapseAllRestBeatToQuarter(beat) {
     if (!beat || beat.length === 0) return beat;
     if (!beat.every((e) => e.kind === "rest")) return beat;
-    // Whole beat silent -> plain quarter rest (no tuplet)
     return [{ kind: "rest", dur: "q", beats: 1 }];
   }
 
   function mergeTripletBeatClean(beat) {
-  if (!beat || !beat._tuplet) return beat;
+    if (!beat || !beat._tuplet) return beat;
+    const pat = beat.map((e) => (e.kind === "note" ? "n" : "r")).join("");
 
-  const pat = beat.map((e) => (e.kind === "note" ? "n" : "r")).join("");
+    if (pat === "rrr") return [{ kind: "rest", dur: "q", beats: 1 }];
+    if (pat === "nrr") return [{ kind: "note", dur: "q", beats: 1 }];
 
-  // r r r -> quarter rest (drop tuplet entirely)
-  if (pat === "rrr") return [{ kind: "rest", dur: "q", beats: 1 }];
-
-  // n r r -> quarter note (drop tuplet entirely)
-  if (pat === "nrr") return [{ kind: "note", dur: "q", beats: 1 }];
-
-  // r n r -> 8th rest, then quarter note (KEEP tuplet)
-  if (pat === "rnr") {
-    const out = [
-      { kind: "rest", dur: "8", beats: 1 / 3 },
-      { kind: "note", dur: "q", beats: 2 / 3 },
-    ];
-    out._tuplet = beat._tuplet;
-    return out;
+    if (pat === "rnr") {
+      const out = [{ kind: "rest", dur: "8", beats: 1 / 3 }, { kind: "note", dur: "q", beats: 2 / 3 }];
+      out._tuplet = beat._tuplet;
+      return out;
+    }
+    if (pat === "rrn") {
+      const out = [{ kind: "rest", dur: "q", beats: 2 / 3 }, { kind: "note", dur: "8", beats: 1 / 3 }];
+      out._tuplet = beat._tuplet;
+      return out;
+    }
+    if (pat === "nrn") {
+      const out = [{ kind: "note", dur: "q", beats: 2 / 3 }, { kind: "note", dur: "8", beats: 1 / 3 }];
+      out._tuplet = beat._tuplet;
+      return out;
+    }
+    return beat;
   }
-
-  // r r n -> quarter rest, then 8th note (KEEP tuplet)
-  if (pat === "rrn") {
-    const out = [
-      { kind: "rest", dur: "q", beats: 2 / 3 },
-      { kind: "note", dur: "8", beats: 1 / 3 },
-    ];
-    out._tuplet = beat._tuplet;
-    return out;
-  }
-
-  // n r n -> quarter note, then 8th note (KEEP tuplet)
-  if (pat === "nrn") {
-    const out = [
-      { kind: "note", dur: "q", beats: 2 / 3 },
-      { kind: "note", dur: "8", beats: 1 / 3 },
-    ];
-    out._tuplet = beat._tuplet;
-    return out;
-  }
-
-  return beat;
-}
-
 
   function generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets }) {
     const out = [];
@@ -441,8 +366,6 @@
   // ---------- Convert to VexFlow notes ----------
   function makeStaveNote(flow, elem) {
     const isRest = elem.kind === "rest";
-
-    // Base durations only: "q" | "8" | "16"  (dots are attached as modifiers)
     const base = elem.dur;
     const duration = isRest ? (base + "r") : base;
 
@@ -456,15 +379,14 @@
 
     const dots = Math.max(0, Number(elem.dots || 0));
     if (dots > 0) {
-      if (flow.Dot && typeof flow.Dot.buildAndAttach === "function") {
+      if (flow.Dot?.buildAndAttach) {
         for (let i = 0; i < dots; i++) flow.Dot.buildAndAttach([note], { all: true });
-      } else if (typeof note.addDotToAll === "function") {
+      } else if (note.addDotToAll) {
         for (let i = 0; i < dots; i++) note.addDotToAll();
-      } else if (typeof note.addDot === "function") {
+      } else if (note.addDot) {
         for (let i = 0; i < dots; i++) note.addDot(0);
       }
     }
-
     note.setStemDirection(flow.Stem.UP).setStemLength(35);
     return note;
   }
@@ -477,28 +399,27 @@
     for (let beatIdx = 0; beatIdx < 4; beatIdx++) {
       const beat = measureModel.beats[beatIdx];
       const vfNotes = beat.map((e) => makeStaveNote(flow, e));
+      
+      let pos = 0;
+      for (let i = 0; i < beat.length; i++) {
+        vfNotes[i].__beatPos = beatIdx + pos;
+        pos += Number(beat[i]?.beats || 0);
+      }
       notes.push(...vfNotes);
 
       const isTripletBeat = !!beat._tuplet;
 
-      // tag triplet rests using the MODEL (reliable)
       if (isTripletBeat) {
         for (let i = 0; i < beat.length; i++) {
           if (beat[i]?.kind === "rest") vfNotes[i].__tripletRest = true;
         }
-      }
-
-      if (isTripletBeat) {
         for (let i = 0; i < vfNotes.length; i++) {
           const n = vfNotes[i];
           if (n && typeof n.isRest === "function" && n.isRest()) {
-            n.setKeyLine?.(0, 3);     // same line you use elsewhere
-            n.setYShift?.(-6);        // if it moves the wrong way, flip to +6
+            n.setKeyLine?.(0, 3);
+            n.setYShift?.(-6);
           }
         }
-      }
-
-      if (isTripletBeat) {
         tuplets.push(new flow.Tuplet(vfNotes, {
           ...beat._tuplet,
           bracketed: true,
@@ -506,12 +427,9 @@
         }));
       }
 
-      // ---- PRO BEAMING (Option B) ----
-      // 1) Normal 8ths / 16ths: beam contiguous groups within the beat,
-      //    never across rests, never across beat boundaries.
+      // Pro Beaming
       let group = [];
-      let groupDur = null; // "8" or "16"
-
+      let groupDur = null;
       function flushGroup() {
         if (group.length >= 2) {
           group.forEach((n) => n.setStemDirection(flow.Stem.UP));
@@ -530,25 +448,22 @@
       for (let i = 0; i < beat.length; i++) {
         const elem = beat[i];
         const note = vfNotes[i];
-
         const isNote = elem.kind === "note";
-        const isTuplet = !!beat._tuplet; // whole beat is tuplet
-        const isBeamable8 = !isTuplet && elem.dur === "8";   // allow dotted 8ths to beam
+        const isTuplet = !!beat._tuplet; 
+        const isBeamable8 = !isTuplet && elem.dur === "8";
         const isBeamable16 = !isTuplet && elem.dur === "16";
 
         if (isNote && (isBeamable8 || isBeamable16)) {
-          if (!groupDur) groupDur = elem.dur; // "8" or "16"
+          if (!groupDur) groupDur = elem.dur;
           group.push(note);
         } else {
-          flushGroup(); // rest, quarter, or tuplet breaks the beam
+          flushGroup(); 
         }
       }
-      flushGroup(); // end of beat
+      flushGroup(); 
 
-      // 2) Triplet beaming: contiguous tuplet notes only (no beams across rests).
       if (isTripletBeat) {
         let tripGroup = [];
-
         function flushTripGroup() {
           if (tripGroup.length >= 2) {
             tripGroup.forEach((n) => n.setStemDirection(flow.Stem.UP));
@@ -558,23 +473,19 @@
           }
           tripGroup = [];
         }
-
         for (let i = 0; i < beat.length; i++) {
           const elem = beat[i];
           const note = vfNotes[i];
-
           if (elem.kind === "note" && elem.dur === "8") {
             tripGroup.push(note);
           } else {
-            flushTripGroup(); // rest in the triplet breaks the beam
+            flushTripGroup();
           }
         }
         flushTripGroup();
       }
-      // ---- END PRO BEAMING ----
     }
 
-    // Force all beams to render as "up"
     beams.forEach((b) => {
       if (b && b.setBeamDirection) b.setBeamDirection(flow.Stem.UP);
     });
@@ -587,73 +498,34 @@
 
   function packMeasure(flow, measureModel, isFirstMeasure = false) {
     const pack = buildMeasure(flow, measureModel);
-
     const voice = new flow.Voice({ num_beats: 4, beat_value: 4 });
-voice.setStrict(false);
-voice.addTickables(pack.notes);
+    voice.setStrict(false);
+    voice.addTickables(pack.notes);
 
-const BASE = 170;
+    const BASE = 170 * SHEET_DENSITY;
+    const PER_NOTE = 18 * SHEET_DENSITY;
+    const PER_TUPLET = 26 * SHEET_DENSITY;
+    const firstPad = (isFirstMeasure ? 70 : 0) * SHEET_DENSITY;
 
-    const PER_NOTE = 18;                    // each tickable needs room
-    const PER_TUPLET = 26;                  // bracket/number room
-    const firstPad = isFirstMeasure ? 70 : 0;
-
-    const minW = BASE
-      + pack.notes.length * PER_NOTE
-      + pack.tuplets.length * PER_TUPLET
-      + firstPad;
-
+    const minW = BASE + pack.notes.length * PER_NOTE + pack.tuplets.length * PER_TUPLET + firstPad;
     return { ...pack, voice, minW: Math.ceil(minW) };
-  }
-
-  function estimateMeasureMinWidth(measureModel) {
-    // Simple spacing heuristic: more noteheads/flags/tuplets => wider measure
-    let elems = 0;
-    let sixteenths = 0;
-    let tripletBeats = 0;
-
-    for (const beat of measureModel.beats) {
-      elems += beat.length;
-      sixteenths += beat.filter((e) => e.dur === "16").length;
-
-      const isTripletBeat = beat.length === 3 && beat.every((e) => e.dur === "8t");
-      if (isTripletBeat) tripletBeats += 1;
-    }
-
-    // Tuned for your rhythm set (q / 8 / 16 / 8t)
-    const BASE = 150;                 // clef/time padding-ish (even though only first has it)
-    const PER_ELEM = 16;              // each note/rest needs horizontal room
-    const PER_16 = 6;                 // extra room for double-flags & tighter beams
-    const PER_TRIPLET_BEAT = 14;      // tuplet bracket/number slug
-    return BASE + elems * PER_ELEM + sixteenths * PER_16 + tripletBeats * PER_TRIPLET_BEAT;
   }
 
   function render(exercise) {
     const flow = VF();
+    if (!(scoreEl instanceof HTMLCanvasElement)) throw new Error("Canvas needed");
 
-    if (!(scoreEl instanceof HTMLCanvasElement)) {
-      throw new Error(`Expected <canvas id="score"> but found <${scoreEl?.tagName?.toLowerCase()}>.`);
-    }
-
-    // Layout
     const totalMeasures = exercise.length;
-
     const packs = exercise.map((mm, i) => packMeasure(flow, mm, i === 0));
-
-    // Base canvas width from container (cap at 1200; scoreWrap can scroll)
     const rectW = Math.floor(scoreWrapEl.getBoundingClientRect().width || 0);
     const MIN_CANVAS_W = 600;
-    const MAX_CANVAS_W = 1200;
-
     const marginX = 20;
     const marginY = 18;
-    const lineGap = 150;
+    const lineGap = 120;
+    const PREFERRED_PER_LINE = 6;
+    const MIN_MEASURE_W = 150;
 
-    // Prefer 4 per line (only drop if we still can't fit even after widening to 1200)
-    const PREFERRED_PER_LINE = 4;
-    const MIN_MEASURE_W = 210;
-
-    let wrapW = Math.max(MIN_CANVAS_W, Math.min(MAX_CANVAS_W, rectW - 24));
+    let wrapW = Math.max(MIN_CANVAS_W, rectW - 24);
     let usableW = wrapW - marginX * 2;
 
     function maxLineMinSum(mpl) {
@@ -668,52 +540,58 @@ const BASE = 170;
     }
 
     let measuresPerLine = Math.min(PREFERRED_PER_LINE, totalMeasures);
-
-    function tryWidenToFit(mpl) {
-      const needed = maxLineMinSum(mpl);
-      if (needed <= usableW) return true;
-
-      // Try widening canvas up to MAX_CANVAS_W to keep mpl (scoreWrap will scroll if needed)
-      const desiredWrap = Math.min(MAX_CANVAS_W, needed + marginX * 2);
-      if (desiredWrap > wrapW) {
-        wrapW = desiredWrap;
-        usableW = wrapW - marginX * 2;
-      }
-      return needed <= usableW;
-    }
-
     while (measuresPerLine > 1) {
-      if ((usableW / measuresPerLine) < MIN_MEASURE_W) { measuresPerLine--; continue; }
-      if (!tryWidenToFit(measuresPerLine)) { measuresPerLine--; continue; }
-      break;
+      const needed = maxLineMinSum(measuresPerLine);
+      if (needed <= usableW && (usableW / measuresPerLine) >= MIN_MEASURE_W) break;
+      measuresPerLine--;
     }
+    measuresPerLine = Math.max(1, measuresPerLine);
 
     const lines = Math.ceil(totalMeasures / measuresPerLine);
     const height = marginY * 2 + lines * lineGap;
-
-    // Scale down to fit the visible wrapper (prevents clipping on small screens)
     const wrapBoxW = Math.floor(scoreWrapEl.getBoundingClientRect().width || 0);
-    const displayW = Math.max(320, wrapBoxW - 24); // scoreWrap padding(12*2)
+    const displayW = Math.max(320, wrapBoxW - 24);
     const scale = Math.min(1, displayW / wrapW);
 
     const physW = Math.max(1, Math.floor(wrapW * scale));
     const physH = Math.max(1, Math.floor(height * scale));
 
+    lastRenderScale = scale;
+
+    if (playheadEl instanceof HTMLCanvasElement) {
+      playheadEl.width = physW;
+      playheadEl.height = physH;
+      playheadEl.style.width = physW + "px";
+      playheadEl.style.height = physH + "px";
+    }
+    layoutMeasures = []; 
+    clearPlayhead();
+
     const renderer = new flow.Renderer(scoreEl, flow.Renderer.Backends.CANVAS);
     renderer.resize(physW, physH);
-
-    // Make the element match the drawing buffer
     scoreEl.style.width = physW + "px";
     scoreEl.style.height = physH + "px";
+    scoreEl.style.verticalAlign = "top";
+
+    scoreWrapEl.style.position = "relative";
+    if (playheadEl instanceof HTMLCanvasElement) {
+      playheadEl.style.position = "absolute";
+      playheadEl.style.pointerEvents = "none";
+      playheadEl.width = scoreEl.width;
+      playheadEl.height = scoreEl.height;
+      playheadEl.style.width = scoreEl.style.width;
+      playheadEl.style.height = scoreEl.style.height;
+      playheadEl.style.left = scoreEl.offsetLeft + "px";
+      playheadEl.style.top = scoreEl.offsetTop + "px";
+      syncPlayheadOverlayPosition();
+    }
 
     const ctx = renderer.getContext();
     ctx.setFont("Arial", 10, "");
 
-    // Clear canvas FIRST (use physical dimensions)
     if (ctx && ctx.clearRect) ctx.clearRect(0, 0, physW, physH);
     if (ctx && ctx.context && ctx.context.clearRect) ctx.context.clearRect(0, 0, physW, physH);
 
-    // Force black ink (use the real canvas context)
     const raw = ctx.context || ctx;
     if (raw) {
       raw.fillStyle = "#000";
@@ -722,16 +600,13 @@ const BASE = 170;
       raw.scale(scale, scale);
     }
 
-setStatus(`Generated ${exercise.length} measures.`);
+    setStatus(`Generated ${exercise.length} measures.`);
 
     let m = 0;
     for (let line = 0; line < lines; line++) {
       const y = marginY + line * lineGap;
-
-      // Compute this line's measure widths (min widths + distribute leftover space)
       const lineStart = m;
       const lineEnd = Math.min(totalMeasures, lineStart + measuresPerLine);
-
       const mins = [];
       let sumMin = 0;
       for (let i = lineStart; i < lineEnd; i++) {
@@ -740,7 +615,6 @@ setStatus(`Generated ${exercise.length} measures.`);
         sumMin += w;
       }
 
-      // If we have extra room on the line, distribute it proportional to min width
       const extra = Math.max(0, usableW - sumMin);
       const widths = mins.slice();
       if (extra > 0) {
@@ -748,82 +622,117 @@ setStatus(`Generated ${exercise.length} measures.`);
         for (let i = 0; i < widths.length; i++) {
           widths[i] = Math.floor(widths[i] + (extra * (mins[i] / weightSum)));
         }
-        // Fix rounding leftovers so total == usableW
         let diff = usableW - widths.reduce((a, b) => a + b, 0);
         let k = 0;
         while (diff > 0) { widths[k % widths.length]++; diff--; k++; }
       }
 
       let x = marginX;
-
       for (let col = 0; col < widths.length; col++) {
         if (m >= totalMeasures) break;
 
         const w = widths[col];
         const stave = new flow.Stave(x, y, w);
-        if (stave.setStyle) stave.setStyle({ strokeStyle: "#000", fillStyle: "#000" });
-        // Default is a standard 5-line staff, so no need to override.
-        // stave.setNumLines(5);
+        const x0 = (typeof stave.getNoteStartX === "function") ? stave.getNoteStartX() : (x + 20);
+        const staveTopY = (typeof stave.getYForLine === "function") ? (stave.getYForLine(0)) : (y + 10);
+        const staveBotY = (typeof stave.getYForLine === "function") ? (stave.getYForLine(4)) : (y + 50);
 
+        const V_PADDING = 10; 
+        const topY = staveTopY - V_PADDING;
+        const botY = staveBotY + V_PADDING;
+
+        layoutMeasures[m] = { x0, x1: x0, topY, botY, staveTopY, staveBotY }; 
+
+        if (stave.setStyle) stave.setStyle({ strokeStyle: "#000", fillStyle: "#000" });
         if (m === 0 && line === 0 && col === 0) {
           stave.addClef("percussion").addTimeSignature("4/4");
         }
-
         stave.setContext(ctx).draw();
 
         const pack = packs[m];
         const { beams, tuplets, voice } = pack;
 
-        // Make VF4 formatter happy: everything must know its ctx + stave
         if (voice.setContext) voice.setContext(ctx);
         if (voice.setStave) voice.setStave(stave);
-
         pack.notes.forEach((n) => {
           n.setContext(ctx);
           if (n.setStave) n.setStave(stave);
         });
 
-        // force triplet rests to sit on the same line as normal rests
-        const TRIPLET_REST_NUDGE_PX = 0; // set to 4 or 6 if still too high
+        const TRIPLET_REST_NUDGE_PX = 0;
         pack.notes.forEach((n) => {
           if (!n?.__tripletRest) return;
-          const y = (typeof stave.getYForLine === "function" ? stave.getYForLine(3) : null);
+          const y = (typeof stave.getYForLine === "function") ? stave.getYForLine(3) : null;
           if (y != null && typeof n.setYs === "function") n.setYs([y + TRIPLET_REST_NUDGE_PX]);
         });
 
         const formatter = new flow.Formatter();
+        const makeGhost = (dur) => {
+          try { return new flow.GhostNote({ duration: dur }); }
+          catch { return new flow.GhostNote(dur); }
+        };
+        const guideNotes = [makeGhost("q"), makeGhost("q"), makeGhost("q"), makeGhost("q")];
+        const guideVoice = new flow.Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
+        guideVoice.addTickables(guideNotes);
 
-        // Format using the *real* note area inside this stave (prevents overflow)
+        if (guideVoice.setContext) guideVoice.setContext(ctx);
+        if (guideVoice.setStave) guideVoice.setStave(stave);
+        guideNotes.forEach((n) => { n.setContext?.(ctx); n.setStave?.(stave); });
+
+        formatter.joinVoices([voice, guideVoice]);
         if (typeof formatter.formatToStave === "function") {
-          formatter.formatToStave([voice], stave);
+          formatter.formatToStave([voice, guideVoice], stave);
         } else {
           const startX = typeof stave.getNoteStartX === "function" ? stave.getNoteStartX() : (x + 20);
           const endX   = typeof stave.getNoteEndX === "function"   ? stave.getNoteEndX()   : (x + w - 20);
           const avail = Math.max(60, (endX - startX) - 10);
-          formatter.format([voice], avail);
+          formatter.format([voice, guideVoice], avail);
         }
 
-        // Force triplet rests to sit like normal rests (AFTER formatting, BEFORE draw)
-        const TRIPLET_REST_LINE = 3;    // your normal rest line
-        const TRIPLET_REST_NUDGE = 6;   // +down (try 4, 6, 8)
+        const gx = guideNotes.map((n) =>
+          (typeof n.getAbsoluteX === "function") ? n.getAbsoluteX()
+          : (n.getTickContext?.() ? n.getTickContext().getX() : null)
+        );
+
+        const endX = (typeof stave.getNoteEndX === "function") ? stave.getNoteEndX() : (x + w - 20);
+        const beatX = [
+          gx[0] ?? x0,
+          gx[1] ?? null,
+          gx[2] ?? null,
+          gx[3] ?? null,
+          endX
+        ];
+
+        const anchors = [];
+        anchors.push({ b: 0, x: beatX[0] });
+        for (let bi = 1; bi < MEASURE_BEATS; bi++) {
+          if (beatX[bi] != null) anchors.push({ b: bi, x: beatX[bi] });
+        }
 
         pack.notes.forEach((n) => {
+          const isRest = (typeof n.isRest === "function") ? n.isRest() : false;
+          if (isRest) return;
+          const b = n.__beatPos;
+          if (b == null) return;
+          const x = (typeof n.getAbsoluteX === "function") ? n.getAbsoluteX() : (n.getTickContext?.() ? n.getTickContext().getX() : null);
+          if (x != null) anchors.push({ b, x });
+        });
+
+        anchors.push({ b: 4, x: beatX[4] });
+        anchors.sort((a, b) => (a.b - b.b) || (a.x - b.x));
+        
+        layoutMeasures[m] = { x0: beatX[0], x1: beatX[4], beatX, topY, botY, staveTopY, staveBotY, anchors };
+
+        const TRIPLET_REST_LINE = 3;
+        const TRIPLET_REST_NUDGE = 6;
+        pack.notes.forEach((n) => {
           if (!n?.__tripletRest) return;
-
-          // force staff lines
           n.setKeyLine?.(0, TRIPLET_REST_LINE);
-
-          // hard override y
-          const y = (typeof stave.getYForLine === "function")
-            ? stave.getYForLine(TRIPLET_REST_LINE) + TRIPLET_REST_NUDGE
-            : null;
-
+          const y = (typeof stave.getYForLine === "function") ? stave.getYForLine(TRIPLET_REST_LINE) + TRIPLET_REST_NUDGE : null;
           if (y != null) {
             if (typeof n.setYs === "function") n.setYs([y]);
-            else n.ys = [y]; // fallback
+            else n.ys = [y];
           }
-
-          // extra fallback used by some VF builds
           if (n.render_options) n.render_options.y_shift = TRIPLET_REST_NUDGE;
         });
 
@@ -835,18 +744,168 @@ setStatus(`Generated ${exercise.length} measures.`);
         x += w;
       }
     }
-
-    // Undo the ctx.scale(scale, scale) we applied above
     if (raw) raw.restore();
   }
 
   // ---------- Playback ----------
+  const MEASURE_BEATS = 4;
+  
   let audioCtx = null;
   let isPlaying = false;
-
-  // Prevent old setTimeout() callbacks from stopping a new run
-  let stopTimerId = null;
+  let isPaused = false;
+  let schedulerId = null;
+  
+  // Timing / Sync
+  let lastRenderScale = 1;
+  let layoutMeasures = []; 
   let playRunId = 0;
+  let playheadRAF = null;
+  
+  // Audio Scheduling State
+  let nextBeatIndex = 0;
+  let nextBeatTime = 0;
+  let totalBeatsScheduled = 0;
+  let eventsByBeat = []; 
+
+  // Dynamic Playhead State (Accumulator)
+  let playbackBeat = 0;   // The visual position in total beats (float)
+  let lastAudioTime = 0;  // Timestamp of the last frame
+
+  function syncPlayheadOverlayPosition() {
+    if (!(playheadEl instanceof HTMLCanvasElement)) return;
+    playheadEl.style.left = "0px";
+    playheadEl.style.top  = "0px";
+  }
+
+  function clearPlayhead() {
+    if (!(playheadEl instanceof HTMLCanvasElement)) return;
+    const c = playheadEl.getContext("2d");
+    if (!c) return;
+    c.clearRect(0, 0, playheadEl.width, playheadEl.height);
+  }
+
+  function xFromAnchors(geom, localBeat) {
+    const a = geom?.anchors;
+    if (!a || a.length < 2) {
+      const bx = geom.beatX || [geom.x0, null, null, null, geom.x1];
+      const b0 = Math.max(0, Math.min(MEASURE_BEATS - 1, Math.floor(localBeat)));
+      const frac = Math.max(0, Math.min(1, localBeat - b0));
+      const x0 = bx[b0] ?? geom.x0;
+      const x1 = bx[b0 + 1] ?? geom.x1;
+      return x0 + (x1 - x0) * frac;
+    }
+    let i = 0;
+    while (i + 1 < a.length && a[i + 1].b <= localBeat + 1e-9) i++;
+    const A = a[i];
+    const B = a[Math.min(i + 1, a.length - 1)];
+    if (!B || B.b === A.b) return A.x;
+    const f = (localBeat - A.b) / (B.b - A.b);
+    return A.x + (B.x - A.x) * Math.max(0, Math.min(1, f));
+  }
+
+  function drawPlayheadAtBeat(beatPos) {
+    if (!(playheadEl instanceof HTMLCanvasElement)) return;
+    const ctx = playheadEl.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, playheadEl.width, playheadEl.height);
+
+    // FIX: Clamp negative beats (count-off) to 0 so the playhead sits at the start
+    const visibleBeat = Math.max(0, beatPos);
+
+    // FIX: Prevent array index overflow during the end buffer
+    let mIdx = Math.floor(visibleBeat / MEASURE_BEATS); 
+    if (mIdx >= layoutMeasures.length && mIdx > 0) {
+      mIdx = layoutMeasures.length - 1;
+    }
+
+    const geom = layoutMeasures[mIdx];
+    if (!geom) return;
+
+    // Calculate local beat within the clamped measure
+    let localBeat = visibleBeat - mIdx * MEASURE_BEATS;
+    // If we clamped mIdx (end of song), force localBeat to end (4.0)
+    if (visibleBeat >= (mIdx + 1) * MEASURE_BEATS) {
+        localBeat = MEASURE_BEATS; 
+    }
+
+    const s = lastRenderScale || 1;
+    const currentX = xFromAnchors(geom, localBeat) * s;
+    
+    let y0 = Math.max(0, geom.topY * s);
+    let y1 = Math.min(playheadEl.height, geom.botY * s);
+
+    const halfWidth = 2.5;
+    const clampedX = Math.max(halfWidth, Math.min(playheadEl.width - halfWidth, currentX));
+
+    if (scoreWrapEl) {
+        const scrollT = scoreWrapEl.scrollTop;
+        const wrapH = scoreWrapEl.clientHeight;
+        if (y0 < scrollT || y1 > scrollT + wrapH) {
+            scoreWrapEl.scrollTop = y0 - 20; 
+        }
+        syncPlayheadOverlayPosition();
+    }
+
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.strokeStyle = "#fe6429";
+    ctx.lineWidth = 5; 
+    ctx.lineCap = "round"; 
+    ctx.shadowColor = "rgba(254,100,41,0.45)";
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.moveTo(clampedX, y0);
+    ctx.lineTo(clampedX, y1);
+    ctx.stroke();
+    ctx.restore();
+  }
+ 
+  // --- Animation Loop with Dynamic Accumulator ---
+  function startPlayheadLoop(runId) {
+    if (!(playheadEl instanceof HTMLCanvasElement)) return;
+    if (!audioCtx) return;
+
+    cancelAnimationFrame(playheadRAF || 0);
+
+    const tick = () => {
+      if (!isPlaying || !audioCtx || isPaused) return;
+      if (runId !== playRunId) return;
+
+      const now = audioCtx.currentTime;
+      // Calculate delta time (seconds elapsed since last frame)
+      const dt = now - lastAudioTime;
+      lastAudioTime = now;
+
+      // READ TEMPO LIVE
+      const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+      const spb = 60 / tempoNow;
+
+      // Accumulate visual position: Beats += Seconds / (SecondsPerBeat)
+      playbackBeat += dt / spb;
+
+      // Stop EXACTLY at the end of the music + Buffer
+      if (playbackBeat >= totalBeatsScheduled + END_BUFFER_BEATS) {
+        stop();
+        return;
+      }
+
+      drawPlayheadAtBeat(playbackBeat);
+
+      // --- Update Progress Bar ---
+      if (progressBar) {
+        const total = totalBeatsScheduled;
+        // Clamp current to max total to avoid progress bar overflowing
+        const current = Math.min(Math.max(0, playbackBeat), total);
+        const pct = (total > 0) ? (current / total) * 100 : 0;
+        progressBar.style.width = pct + "%";
+      }
+      // --------------------------------
+
+      playheadRAF = requestAnimationFrame(tick);
+    };
+
+    playheadRAF = requestAnimationFrame(tick);
+  }
 
   function clickAt(time, freq, gain = 0.08, dur = 0.03) {
     const o = audioCtx.createOscillator();
@@ -875,76 +934,156 @@ setStatus(`Generated ${exercise.length} measures.`);
     return { events, totalBeats: beatPos };
   }
 
-  function play() {
-    if (!currentExercise) return;
+  // --- Audio Scheduler ---
+  function scheduleBeats(startBeatIndex, startTime) {
+      nextBeatIndex = startBeatIndex;
+      nextBeatTime = startTime;
+      
+      const TICK_MS = 25;
+      const scheduleChunk = () => {
+        if (!isPlaying || isPaused || !audioCtx) return;
 
-    stop();
+        // READ TEMPO LIVE (for upcoming beats)
+        const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+        const spb = 60 / tempoNow;
+        const horizon = audioCtx.currentTime + Math.max(0.8, spb * 2.5);
 
-    const tempo = Number(tempoEl.value);
-    const secondsPerBeat = 60 / tempo;
+        while (nextBeatTime < horizon && nextBeatIndex < totalBeatsScheduled) {
+          const isDownbeat = (nextBeatIndex % MEASURE_BEATS) === 0;
+          
+          // Metronome Click (Always plays, even during count-off)
+          clickAt(nextBeatTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.10 : 0.06, 0.025);
 
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    audioCtx.resume?.().catch(() => {});
-    isPlaying = true;
-    playBtn.disabled = true;
-    stopBtn.disabled = false;
-    setStatus("Playing");
+          // Rhythms (Only play if we are past the count-off)
+          if (nextBeatIndex >= 0) {
+            const beatNotes = eventsByBeat[nextBeatIndex] || [];
+            for (const n of beatNotes) {
+              clickAt(nextBeatTime + n.offset * spb, 650, 0.07, 0.03);
+            }
+          }
 
-    const { events, totalBeats } = flattenEvents(currentExercise);
-    const startTime = audioCtx.currentTime + 0.06;
+          nextBeatIndex += 1;
+          nextBeatTime += spb;
+        }
+      };
 
-    for (let b = 0; b <= totalBeats + 0.0001; b += 1) {
-      const t = startTime + b * secondsPerBeat;
-      const isDownbeat = (Math.round(b) % 4) === 0;
-      clickAt(t, isDownbeat ? 1200 : 900, isDownbeat ? 0.10 : 0.06, 0.025);
-    }
+      schedulerId = window.setInterval(scheduleChunk, TICK_MS);
+      scheduleChunk();
+  }
 
-    for (const ev of events) {
-      if (ev.kind !== "note") continue;
-      clickAt(startTime + ev.beat * secondsPerBeat, 650, 0.07, 0.03);
-    }
+  function startMusic() {
+      if (!currentExercise) return;
+      
+      if (!isPaused) {
+        // --- START FRESH ---
+        stop(); 
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        const { events } = flattenEvents(currentExercise);
+        
+        // FIX: Stop exactly at end of music (Removed + MEASURE_BEATS)
+        totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
 
-    const myRun = ++playRunId;
+        const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
+        eventsByBeat = Array.from({ length: beatsCount }, () => []);
+        for (const ev of events) {
+          if (ev.kind !== "note") continue;
+          const b = Math.floor(ev.beat + 1e-9);
+          const offset = ev.beat - b;
+          if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
+        }
 
-    const endTime = startTime + totalBeats * secondsPerBeat + 0.25;
+        // Initialize Live Accumulators
+        lastAudioTime = audioCtx.currentTime;
+        
+        // FIX: Start at -4 for a 1-measure count-off
+        playbackBeat = -MEASURE_BEATS; 
+        
+        // Start Scheduling from count-off
+        scheduleBeats(-MEASURE_BEATS, audioCtx.currentTime + 0.05); 
 
-    if (stopTimerId) window.clearTimeout(stopTimerId);
-    stopTimerId = window.setTimeout(() => {
-      // Only stop if this timeout belongs to the current run
-      if (myRun !== playRunId) return;
-      if (isPlaying) stop();
-    }, Math.max(0, (endTime - audioCtx.currentTime) * 1000));
+      } else {
+        // --- RESUME ---
+        lastAudioTime = audioCtx.currentTime; // Reset delta anchor
+        
+        audioCtx.resume().then(() => {
+            const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+            const spb = 60 / tempoNow;
+
+            const nextIntBeat = Math.ceil(playbackBeat);
+            const timeToNext = (nextIntBeat - playbackBeat) * spb;
+            
+            scheduleBeats(nextIntBeat, audioCtx.currentTime + timeToNext);
+        });
+        isPaused = false;
+      }
+
+      isPlaying = true;
+      playBtn.disabled = false;
+      stopBtn.disabled = false;
+      playBtnText.textContent = "Pause";
+      setStatus("Playing", "play");
+      
+      startPlayheadLoop(playRunId);
+  }
+
+  function pauseMusic() {
+      if (!isPlaying || !audioCtx || isPaused) return;
+
+      if (schedulerId) {
+        window.clearInterval(schedulerId);
+        schedulerId = null;
+      }
+
+      audioCtx.suspend().then(() => {
+          isPaused = true;
+          isPlaying = false;
+          playBtnText.textContent = "Play";
+          setStatus("Paused", "warn");
+      });
   }
 
   function stop() {
-    // Invalidate any pending "auto-stop" from older runs
     playRunId++;
-
-    if (stopTimerId) {
-      window.clearTimeout(stopTimerId);
-      stopTimerId = null;
+    if (schedulerId) {
+      window.clearInterval(schedulerId);
+      schedulerId = null;
     }
-
     if (audioCtx) { try { audioCtx.close(); } catch {} }
     audioCtx = null;
 
     isPlaying = false;
+    isPaused = false;
+    playbackBeat = 0; // reset accumulator
+
     playBtn.disabled = false;
     stopBtn.disabled = true;
+    playBtnText.textContent = "Play";
     setStatus("Ready");
+
+    cancelAnimationFrame(playheadRAF || 0);
+    playheadRAF = null;
+    clearPlayhead();
+
+    // Reset progress bar visually
+    if (progressBar) progressBar.style.width = "0%";
+  }
+
+  function togglePlayPause() {
+      if (isPlaying && !isPaused) pauseMusic();
+      else startMusic();
   }
 
   // ---------- Wire up ----------
   function regenerate() {
     try {
+      stop(); 
       clearError();
-
       const measures = Math.max(1, Math.min(32, Math.round(Number(measuresEl.value) || 8)));
       const restPct = Math.max(0, Math.min(60, Math.round(Number(restsEl.value) || 0)));
       const allow8ths = !!allow8thsEl?.checked;
       const allow16ths = !!allow16thsEl?.checked;
       const allowTriplets = !!allowTripletsEl.checked;
-
       currentExercise = generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets });
       render(currentExercise);
       setStatus(`Generated ${measures} Measures`);
@@ -965,15 +1104,14 @@ setStatus(`Generated ${exercise.length} measures.`);
   });
 
   regenBtn.addEventListener("click", regenerate);
-  playBtn.addEventListener("click", play);
+  playBtn.addEventListener("click", togglePlayPause);
   stopBtn.addEventListener("click", stop);
-
+ 
   window.addEventListener("resize", () => {
     if (!currentExercise) return;
-    try { render(currentExercise); } catch (e) { showError(e); }
+    try { render(currentExercise); syncPlayheadOverlayPosition(); } catch (e) { showError(e); }
   });
 
-  // init UI
   tempoValEl.textContent = tempoEl.value;
   restsValEl.textContent = restsEl.value;
   syncSliderFill(tempoEl);
