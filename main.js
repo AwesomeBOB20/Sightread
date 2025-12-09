@@ -1085,7 +1085,7 @@
       else startMusic();
   }
 
-  // ---------- Wire up ----------
+  // ---------- Wire up ---------
   function regenerate() {
     try {
       stop(); 
