@@ -751,20 +751,32 @@
     if (raw) raw.restore();
   }
 
-  // ---------- Playback ----------
+
+
+
+
+
+
+
+
+
+
+
+// ---------- Playback ----------
   const MEASURE_BEATS = 4;
-  
-  let audioCtx = null;
+   
+  // SINGLETON AUDIO STATE (Fixes the "Ghost Player" glitch)
+  let audioCtx = null; 
   let isPlaying = false;
   let isPaused = false;
-  let schedulerId = null;
-  
+  let schedulerTimer = null; // We use setTimeout now, not setInterval
+
   // Timing / Sync
   let lastRenderScale = 1;
   let layoutMeasures = []; 
   let playRunId = 0;
   let playheadRAF = null;
-  
+   
   // Audio Scheduling State
   let nextBeatIndex = 0;
   let nextNoteTime = 0; // AUDIO CLOCK MASTER
@@ -772,8 +784,8 @@
   let eventsByBeat = []; 
 
   // Dynamic Playhead State (Accumulator)
-  let playbackBeat = 0;   // The visual position in total beats (float)
-  let lastAudioTime = 0;  // Timestamp of the last frame
+  let playbackBeat = 0;   
+  let lastAudioTime = 0; 
 
   function syncPlayheadOverlayPosition() {
     if (!(playheadEl instanceof HTMLCanvasElement)) return;
@@ -829,7 +841,7 @@
 
     const s = lastRenderScale || 1;
     const currentX = xFromAnchors(geom, localBeat) * s;
-    
+     
     let y0 = Math.max(0, geom.topY * s);
     let y1 = Math.min(playheadEl.height, geom.botY * s);
 
@@ -929,55 +941,53 @@
     return { events, totalBeats: beatPos };
   }
 
-  // --- Audio Scheduler (Webflow-Safe + High Precision Clock) ---
+  // --- Audio Scheduler (Recursive Timeout - Glitch Free) ---
   function scheduleBeats() {
+    if (!isPlaying || isPaused || !audioCtx) return;
+
     const TICK_MS = 50; 
     const LOOKAHEAD = 1.0; 
+    const currentRunId = playRunId; // Closure capture
 
-    const scheduleChunk = () => {
-      if (!isPlaying || isPaused || !audioCtx) return;
+    const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+    const spb = 60 / tempoNow;
 
-      const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
-      const spb = 60 / tempoNow;
-
-      // Schedule any beats that fall within the lookahead window
-      // Audio Clock (nextNoteTime) is the master authority.
-      while (nextNoteTime < audioCtx.currentTime + LOOKAHEAD) {
-        
-        // LAG PROTECTION: If we fell behind by > 0.1s, skip the note to catch up
-        // This prevents the "bunch of notes" machine-gun effect.
-        if (nextNoteTime < audioCtx.currentTime - 0.1) {
-             nextNoteTime += spb;
-             nextBeatIndex++;
-             continue; 
-        }
-
-        if (nextBeatIndex < totalBeatsScheduled) {
-            const isDownbeat = (nextBeatIndex % MEASURE_BEATS === 0);
-            
-            // Metronome Click (Play on every beat, including count-off)
-            clickAt(nextNoteTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
-
-            // Rhythm Notes
-            if (nextBeatIndex >= 0) {
-              const beatNotes = eventsByBeat[nextBeatIndex] || [];
-              for (const n of beatNotes) {
-                const noteTime = nextNoteTime + (n.offset * spb);
-                if (noteTime > audioCtx.currentTime - 0.1) {
-                   clickAt(noteTime, 650, 0.07, 0.03);
-                }
-              }
-            }
-        }
-
-        // Advance the clock based on CURRENT tempo
-        nextNoteTime += spb;
-        nextBeatIndex++;
+    while (nextNoteTime < audioCtx.currentTime + LOOKAHEAD) {
+      // Lag protection: if behind by >0.2s, skip ahead
+      if (nextNoteTime < audioCtx.currentTime - 0.2) {
+           nextNoteTime += spb;
+           nextBeatIndex++;
+           continue; 
       }
-    };
 
-    schedulerId = window.setInterval(scheduleChunk, TICK_MS);
-    scheduleChunk();
+      if (nextBeatIndex < totalBeatsScheduled) {
+           const isDownbeat = (nextBeatIndex % MEASURE_BEATS === 0);
+           
+           // Metronome
+           clickAt(nextNoteTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
+
+           // Notes
+           if (nextBeatIndex >= 0 && nextBeatIndex < eventsByBeat.length) {
+             const beatNotes = eventsByBeat[nextBeatIndex] || [];
+             for (const n of beatNotes) {
+               const noteTime = nextNoteTime + (n.offset * spb);
+               if (noteTime > audioCtx.currentTime - 0.05) {
+                  clickAt(noteTime, 650, 0.07, 0.03);
+               }
+             }
+           }
+      }
+
+      nextNoteTime += spb;
+      nextBeatIndex++;
+    }
+
+    // Schedule next check (Recursion)
+    schedulerTimer = window.setTimeout(() => {
+        if (playRunId === currentRunId) {
+            scheduleBeats();
+        }
+    }, TICK_MS);
   }
 
   // --- Scrubber Logic ---
@@ -987,17 +997,12 @@
     const clickX = e.clientX - rect.left;
     let pct = Math.max(0, Math.min(1, clickX / rect.width));
     
-    // Jump visual playhead
     playbackBeat = pct * totalBeatsScheduled;
-
-    // Reset Audio Clock to sync with the new visual position
-    // We assume the user wants to start playing *immediately* from here.
     nextBeatIndex = Math.ceil(playbackBeat);
     if (audioCtx) {
         nextNoteTime = audioCtx.currentTime + 0.05;
     }
 
-    // Update UI immediately
     if (progressBar) progressBar.style.width = (pct * 100) + "%";
     drawPlayheadAtBeat(playbackBeat);
   }
@@ -1009,22 +1014,14 @@
 
   function startMusic() {
     if (!currentExercise) return;
+    
+    // Strict restart if already playing
+    if (isPlaying && !isPaused) stop();
 
-    // 1. Force a hard stop to clear any existing intervals immediately
-    stop(); 
-
-    // 2. Lock the button to prevent accidental double-triggering
-    playBtn.disabled = true;
-    playBtnText.textContent = "Loading...";
-
-    // 3. Increment the Run ID. This is our "Ticket Number".
-    // We already have playRunId (used for visuals), let's use it for audio too.
-    const myRunId = playRunId; 
-
+    // Singleton Context (Don't destroy/recreate)
     const AudioContext = window.AudioContext || window.webkitAudioContext;
-    audioCtx = new AudioContext();
+    if (!audioCtx) audioCtx = new AudioContext();
 
-    // Flatten events
     const { events } = flattenEvents(currentExercise);
     totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
     const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
@@ -1037,38 +1034,31 @@
       if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
     }
 
-    // 4. Resume Audio Context
+    // Resume/Unlock
     audioCtx.resume().then(() => {
-      // --- CRITICAL CHECK ---
-      // If the user clicked Stop or Play again while we were waiting,
-      // myRunId will no longer match the global playRunId.
-      // If so, ABORT. Do not start the scheduler.
-      if (playRunId !== myRunId) {
-         return; 
-      }
-      
-      // If we are here, we are the valid player. Unlock UI.
+      // Setup State
       playBtn.disabled = false;
       stopBtn.disabled = false;
       isPlaying = true;
+      isPaused = false;
+      playRunId++; 
+      
       playBtnText.textContent = "Pause";
       setStatus("Playing", "play");
 
-      // 5. Reset Clocks to NOW (Fixes the "Machine Gun" catch-up effect)
+      // Clocks
       lastAudioTime = audioCtx.currentTime;
       playbackBeat = -MEASURE_BEATS; 
       nextBeatIndex = -MEASURE_BEATS;
-      
-      // Give it a tiny buffer (0.1s) so the first note doesn't sound "choked"
       nextNoteTime = audioCtx.currentTime + 0.1; 
 
+      // Loops
+      if (schedulerTimer) clearTimeout(schedulerTimer);
       scheduleBeats(); 
       startPlayheadLoop(playRunId);
 
     }).catch(e => {
-      console.error("Audio resume failed", e);
-      playBtn.disabled = false;
-      playBtnText.textContent = "Play";
+      console.error(e);
       setStatus("Audio Error");
     });
   }
@@ -1076,9 +1066,9 @@
   function pauseMusic() {
       if (!isPlaying || !audioCtx || isPaused) return;
 
-      if (schedulerId) {
-        window.clearInterval(schedulerId);
-        schedulerId = null;
+      if (schedulerTimer) {
+        clearTimeout(schedulerTimer);
+        schedulerTimer = null;
       }
 
       audioCtx.suspend().then(() => {
@@ -1090,16 +1080,19 @@
   }
 
   function stop() {
-    playRunId++;
-    if (schedulerId) {
-      window.clearInterval(schedulerId);
-      schedulerId = null;
-    }
-    if (audioCtx) { try { audioCtx.close(); } catch {} }
-    audioCtx = null;
-
+    playRunId++; // Kill ghost schedulers
+    
     isPlaying = false;
     isPaused = false;
+    
+    if (schedulerTimer) {
+        clearTimeout(schedulerTimer);
+        schedulerTimer = null;
+    }
+
+    cancelAnimationFrame(playheadRAF || 0);
+    playheadRAF = null;
+
     playbackBeat = 0; 
     nextBeatIndex = 0;
 
@@ -1108,10 +1101,7 @@
     playBtnText.textContent = "Play";
     setStatus("Ready");
 
-    cancelAnimationFrame(playheadRAF || 0);
-    playheadRAF = null;
     clearPlayhead();
-
     if (progressBar) progressBar.style.width = "0%";
   }
 
@@ -1119,6 +1109,17 @@
       if (isPlaying && !isPaused) pauseMusic();
       else startMusic();
   }
+
+
+
+
+
+
+
+
+
+
+
 
   // ---------- Wire up ----------
   function regenerate() {
