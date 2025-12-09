@@ -3,7 +3,7 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ---------- UI ----------
+  // ---------- UI ---------
   const measuresEl = $("measures");
   const tempoEl = $("tempo");
   const tempoValEl = $("tempoVal");
@@ -1131,3 +1131,4 @@
   safeRenderAllIcons();
   regenerate();
 })();
+
