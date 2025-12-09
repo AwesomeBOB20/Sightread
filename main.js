@@ -409,6 +409,8 @@
       }
       notes.push(...vfNotes);
 
+// ... inside buildMeasure function ...
+
       const isTripletBeat = !!beat._tuplet;
 
       if (isTripletBeat) {
@@ -422,13 +424,21 @@
             n.setYShift?.(-6);
           }
         }
+
+        // --- NEW LOGIC START ---
+        // A triplet is "fully filled" if it has 3 elements and ALL are notes (no rests).
+        // If fully filled, we disable the bracket (bracketed: false).
+        const isFullTriplet = (beat.length === 3) && beat.every(e => e.kind === "note");
+        
         tuplets.push(new flow.Tuplet(vfNotes, {
           ...beat._tuplet,
-          bracketed: true,
+          bracketed: !isFullTriplet, // false if full, true if rests/complex
           ratioed: false,
         }));
+        // --- NEW LOGIC END ---
       }
 
+      // ... rest of function ...
       // Pro Beaming
       let group = [];
       let groupDur = null;
@@ -938,9 +948,16 @@
   }
 
   // --- Audio Scheduler (Relative Time) ---
+// --- Audio Scheduler (Webflow-Safe) ---
   function scheduleBeats() {
-    const TICK_MS = 25; 
-    const LOOKAHEAD = 0.5; 
+    // 1. RELAXED TIMING
+    // Checking every 50ms (instead of 25ms) reduces the load on Webflow's main thread.
+    const TICK_MS = 50; 
+    
+    // 2. LARGE SAFETY BUFFER
+    // We schedule nearly 1 second into the future. This allows Webflow scripts to 
+    // freeze the page for up to 0.8s without the audio glitching.
+    const LOOKAHEAD = 0.8; 
 
     const scheduleChunk = () => {
       if (!isPlaying || isPaused || !audioCtx) return;
@@ -962,14 +979,20 @@
         if (timeOffset > LOOKAHEAD) break;
 
         const scheduleTime = audioCtx.currentTime + timeOffset;
+
+        // --- THE "BUNCH OF NOTES" FIX ---
+        // If the browser lagged and this beat is already in the past (by more than 0.1s),
+        // we SKIP it. We do NOT try to play it.
+        if (scheduleTime < audioCtx.currentTime - 0.1) {
+             nextBeatIndex = targetBeat + 1;
+             targetBeat++;
+             continue; 
+        }
         
         // --- Play Sound ---
-        // FIX: Allow negative beats (count-off) to be Downbeats (High Pitch)
-        // logic: -4 % 4 === -0, which is treated as 0 in JS equality checks.
         const isDownbeat = (targetBeat % MEASURE_BEATS === 0);
         
-        // Metronome Click (Play on every beat, including count-off)
-        // High click on 1, Low click on 2,3,4
+        // Metronome Click
         clickAt(scheduleTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
 
         // Rhythm Notes (Only strictly positive beats)
@@ -977,7 +1000,11 @@
           const beatNotes = eventsByBeat[targetBeat] || [];
           for (const n of beatNotes) {
             const noteTime = scheduleTime + (n.offset * spb);
-            clickAt(noteTime, 650, 0.07, 0.03);
+            
+            // Apply the same lag protection to sub-beats
+            if (noteTime > audioCtx.currentTime - 0.1) {
+                clickAt(noteTime, 650, 0.07, 0.03);
+            }
           }
         }
 
