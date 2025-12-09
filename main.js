@@ -23,7 +23,7 @@
   const playheadEl = $("playhead");
   const playBtnText = $("playBtnText");
   const progressBar = $("progressBar");
-  const barContainer = $$(".bar"); // Select the container for clicking
+  const barContainer = $$(".bar");
 
   const SHEET_DENSITY = 0.82; 
   const END_BUFFER_BEATS = 0.25; 
@@ -409,8 +409,6 @@
       }
       notes.push(...vfNotes);
 
-// ... inside buildMeasure function ...
-
       const isTripletBeat = !!beat._tuplet;
 
       if (isTripletBeat) {
@@ -424,21 +422,15 @@
             n.setYShift?.(-6);
           }
         }
-
-        // --- NEW LOGIC START ---
-        // A triplet is "fully filled" if it has 3 elements and ALL are notes (no rests).
-        // If fully filled, we disable the bracket (bracketed: false).
+        // No bracket if full triplet
         const isFullTriplet = (beat.length === 3) && beat.every(e => e.kind === "note");
-        
         tuplets.push(new flow.Tuplet(vfNotes, {
           ...beat._tuplet,
-          bracketed: !isFullTriplet, // false if full, true if rests/complex
+          bracketed: !isFullTriplet, 
           ratioed: false,
         }));
-        // --- NEW LOGIC END ---
       }
 
-      // ... rest of function ...
       // Pro Beaming
       let group = [];
       let groupDur = null;
@@ -775,6 +767,7 @@
   
   // Audio Scheduling State
   let nextBeatIndex = 0;
+  let nextNoteTime = 0; // AUDIO CLOCK MASTER
   let totalBeatsScheduled = 0;
   let eventsByBeat = []; 
 
@@ -820,10 +813,7 @@
     if (!ctx) return;
     ctx.clearRect(0, 0, playheadEl.width, playheadEl.height);
 
-    // Clamp negative beats (count-off) to 0 so the playhead sits at the start
     const visibleBeat = Math.max(0, beatPos);
-
-    // Prevent array index overflow during the end buffer
     let mIdx = Math.floor(visibleBeat / MEASURE_BEATS); 
     if (mIdx >= layoutMeasures.length && mIdx > 0) {
       mIdx = layoutMeasures.length - 1;
@@ -832,9 +822,7 @@
     const geom = layoutMeasures[mIdx];
     if (!geom) return;
 
-    // Calculate local beat within the clamped measure
     let localBeat = visibleBeat - mIdx * MEASURE_BEATS;
-    // If we clamped mIdx (end of song), force localBeat to end (4.0)
     if (visibleBeat >= (mIdx + 1) * MEASURE_BEATS) {
         localBeat = MEASURE_BEATS; 
     }
@@ -871,7 +859,7 @@
     ctx.restore();
   }
  
-  // --- Animation Loop with Dynamic Accumulator ---
+  // --- Animation Loop ---
   function startPlayheadLoop(runId) {
     if (!(playheadEl instanceof HTMLCanvasElement)) return;
     if (!audioCtx) return;
@@ -886,11 +874,10 @@
       const dt = now - lastAudioTime;
       lastAudioTime = now;
 
-      // LIVE TEMPO READ for visual movement
+      // Visuals follow the same tempo math, but errors don't affect audio now
       const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
       const spb = 60 / tempoNow;
 
-      // Move visual playhead
       playbackBeat += dt / spb;
 
       if (playbackBeat >= totalBeatsScheduled + END_BUFFER_BEATS) {
@@ -915,19 +902,14 @@
 
   // --- Audio Utilities ---
   function clickAt(time, freq, gain, dur) {
-    // Safety check: ensure context exists
     if (!audioCtx) return;
-    
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     o.type = "square";
     o.frequency.setValueAtTime(freq, time);
-    
-    // Envelope for crisp sound
     g.gain.setValueAtTime(0.0001, time);
     g.gain.exponentialRampToValueAtTime(gain, time + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
-    
     o.connect(g).connect(audioCtx.destination);
     o.start(time);
     o.stop(time + dur + 0.05);
@@ -947,16 +929,9 @@
     return { events, totalBeats: beatPos };
   }
 
-  // --- Audio Scheduler (Relative Time) ---
-// --- Audio Scheduler (Webflow-Safe) ---
+  // --- Audio Scheduler (Webflow-Safe + High Precision Clock) ---
   function scheduleBeats() {
-    // 1. RELAXED TIMING
-    // Checking every 50ms (instead of 25ms) reduces the load on Webflow's main thread.
     const TICK_MS = 50; 
-    
-    // 2. LARGE SAFETY BUFFER
-    // We schedule nearly 1 second into the future. This allows Webflow scripts to 
-    // freeze the page for up to 0.8s without the audio glitching.
     const LOOKAHEAD = 0.8; 
 
     const scheduleChunk = () => {
@@ -965,51 +940,39 @@
       const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
       const spb = 60 / tempoNow;
 
-      // Identify the next integer beat relative to visual position
-      let targetBeat = Math.ceil(playbackBeat);
-
-      // Ensure we don't re-schedule a beat we've already passed
-      if (targetBeat < nextBeatIndex) targetBeat = nextBeatIndex;
-
-      while (targetBeat < totalBeatsScheduled) {
-        const beatsAway = targetBeat - playbackBeat;
-        const timeOffset = beatsAway * spb;
-
-        // If it's too far in the future, stop scheduling this chunk
-        if (timeOffset > LOOKAHEAD) break;
-
-        const scheduleTime = audioCtx.currentTime + timeOffset;
-
-        // --- THE "BUNCH OF NOTES" FIX ---
-        // If the browser lagged and this beat is already in the past (by more than 0.1s),
-        // we SKIP it. We do NOT try to play it.
-        if (scheduleTime < audioCtx.currentTime - 0.1) {
-             nextBeatIndex = targetBeat + 1;
-             targetBeat++;
+      // Schedule any beats that fall within the lookahead window
+      // Audio Clock (nextNoteTime) is the master authority.
+      while (nextNoteTime < audioCtx.currentTime + LOOKAHEAD) {
+        
+        // LAG PROTECTION: If we fell behind by > 0.1s, skip the note to catch up
+        // This prevents the "bunch of notes" machine-gun effect.
+        if (nextNoteTime < audioCtx.currentTime - 0.1) {
+             nextNoteTime += spb;
+             nextBeatIndex++;
              continue; 
         }
-        
-        // --- Play Sound ---
-        const isDownbeat = (targetBeat % MEASURE_BEATS === 0);
-        
-        // Metronome Click
-        clickAt(scheduleTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
 
-        // Rhythm Notes (Only strictly positive beats)
-        if (targetBeat >= 0) {
-          const beatNotes = eventsByBeat[targetBeat] || [];
-          for (const n of beatNotes) {
-            const noteTime = scheduleTime + (n.offset * spb);
+        if (nextBeatIndex < totalBeatsScheduled) {
+            const isDownbeat = (nextBeatIndex % MEASURE_BEATS === 0);
             
-            // Apply the same lag protection to sub-beats
-            if (noteTime > audioCtx.currentTime - 0.1) {
-                clickAt(noteTime, 650, 0.07, 0.03);
+            // Metronome Click (Play on every beat, including count-off)
+            clickAt(nextNoteTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
+
+            // Rhythm Notes
+            if (nextBeatIndex >= 0) {
+              const beatNotes = eventsByBeat[nextBeatIndex] || [];
+              for (const n of beatNotes) {
+                const noteTime = nextNoteTime + (n.offset * spb);
+                if (noteTime > audioCtx.currentTime - 0.1) {
+                   clickAt(noteTime, 650, 0.07, 0.03);
+                }
+              }
             }
-          }
         }
 
-        nextBeatIndex = targetBeat + 1;
-        targetBeat++;
+        // Advance the clock based on CURRENT tempo
+        nextNoteTime += spb;
+        nextBeatIndex++;
       }
     };
 
@@ -1027,9 +990,12 @@
     // Jump visual playhead
     playbackBeat = pct * totalBeatsScheduled;
 
-    // Reset Audio Scheduler Tracker
-    // We set nextBeatIndex to the next integer beat so the scheduler picks up immediately
+    // Reset Audio Clock to sync with the new visual position
+    // We assume the user wants to start playing *immediately* from here.
     nextBeatIndex = Math.ceil(playbackBeat);
+    if (audioCtx) {
+        nextNoteTime = audioCtx.currentTime + 0.05;
+    }
 
     // Update UI immediately
     if (progressBar) progressBar.style.width = (pct * 100) + "%";
@@ -1048,14 +1014,9 @@
         // --- START FRESH ---
         stop(); 
         
-        // FIX: Ensure AudioContext is created and Resumed immediately
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         audioCtx = new AudioContext();
-        
-        // Browsers sometimes start contexts in 'suspended' state. Force resume.
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
         
         const { events } = flattenEvents(currentExercise);
         
@@ -1070,10 +1031,13 @@
           if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
         }
 
-        // Initialize Live Accumulators
+        // Initialize Clocks
         lastAudioTime = audioCtx.currentTime;
-        playbackBeat = -MEASURE_BEATS; // Start at -4 (or whatever measure size is)
-        nextBeatIndex = -MEASURE_BEATS; 
+        playbackBeat = -MEASURE_BEATS; 
+        
+        // Start Clock relative to NOW
+        nextBeatIndex = -MEASURE_BEATS;
+        nextNoteTime = audioCtx.currentTime + 0.1;
 
         scheduleBeats(); 
 
@@ -1081,6 +1045,10 @@
         // --- RESUME ---
         lastAudioTime = audioCtx.currentTime; 
         audioCtx.resume().then(() => {
+            // Re-align audio clock to NOW
+            nextNoteTime = audioCtx.currentTime + 0.1;
+            // Ensure nextBeatIndex matches where visual playhead is
+            nextBeatIndex = Math.ceil(playbackBeat);
             scheduleBeats();
         });
         isPaused = false;
