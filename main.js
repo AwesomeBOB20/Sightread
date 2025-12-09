@@ -2,6 +2,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const $$ = (sel) => document.querySelector(sel);
 
   // ---------- UI ----------
   const measuresEl = $("measures");
@@ -22,6 +23,7 @@
   const playheadEl = $("playhead");
   const playBtnText = $("playBtnText");
   const progressBar = $("progressBar");
+  const barContainer = $$(".bar"); // Select the container for clicking
 
   const SHEET_DENSITY = 0.82; 
   const END_BUFFER_BEATS = 0.25; 
@@ -763,7 +765,6 @@
   
   // Audio Scheduling State
   let nextBeatIndex = 0;
-  let nextBeatTime = 0;
   let totalBeatsScheduled = 0;
   let eventsByBeat = []; 
 
@@ -809,10 +810,10 @@
     if (!ctx) return;
     ctx.clearRect(0, 0, playheadEl.width, playheadEl.height);
 
-    // FIX: Clamp negative beats (count-off) to 0 so the playhead sits at the start
+    // Clamp negative beats (count-off) to 0 so the playhead sits at the start
     const visibleBeat = Math.max(0, beatPos);
 
-    // FIX: Prevent array index overflow during the end buffer
+    // Prevent array index overflow during the end buffer
     let mIdx = Math.floor(visibleBeat / MEASURE_BEATS); 
     if (mIdx >= layoutMeasures.length && mIdx > 0) {
       mIdx = layoutMeasures.length - 1;
@@ -872,18 +873,16 @@
       if (runId !== playRunId) return;
 
       const now = audioCtx.currentTime;
-      // Calculate delta time (seconds elapsed since last frame)
       const dt = now - lastAudioTime;
       lastAudioTime = now;
 
-      // READ TEMPO LIVE
+      // LIVE TEMPO READ for visual movement
       const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
       const spb = 60 / tempoNow;
 
-      // Accumulate visual position: Beats += Seconds / (SecondsPerBeat)
+      // Move visual playhead
       playbackBeat += dt / spb;
 
-      // Stop EXACTLY at the end of the music + Buffer
       if (playbackBeat >= totalBeatsScheduled + END_BUFFER_BEATS) {
         stop();
         return;
@@ -891,15 +890,12 @@
 
       drawPlayheadAtBeat(playbackBeat);
 
-      // --- Update Progress Bar ---
       if (progressBar) {
         const total = totalBeatsScheduled;
-        // Clamp current to max total to avoid progress bar overflowing
         const current = Math.min(Math.max(0, playbackBeat), total);
         const pct = (total > 0) ? (current / total) * 100 : 0;
         progressBar.style.width = pct + "%";
       }
-      // --------------------------------
 
       playheadRAF = requestAnimationFrame(tick);
     };
@@ -907,17 +903,24 @@
     playheadRAF = requestAnimationFrame(tick);
   }
 
-  function clickAt(time, freq, gain = 0.08, dur = 0.03) {
+  // --- Audio Utilities ---
+  function clickAt(time, freq, gain, dur) {
+    // Safety check: ensure context exists
+    if (!audioCtx) return;
+    
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     o.type = "square";
     o.frequency.setValueAtTime(freq, time);
+    
+    // Envelope for crisp sound
     g.gain.setValueAtTime(0.0001, time);
-    g.gain.exponentialRampToValueAtTime(gain, time + 0.001);
+    g.gain.exponentialRampToValueAtTime(gain, time + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    
     o.connect(g).connect(audioCtx.destination);
     o.start(time);
-    o.stop(time + dur + 0.02);
+    o.stop(time + dur + 0.05);
   }
 
   function flattenEvents(exercise) {
@@ -934,15 +937,10 @@
     return { events, totalBeats: beatPos };
   }
 
-  // --- Audio Scheduler ---
-// --- Audio Scheduler ---
-  function scheduleBeats(startBeatIndex, startTime) {
-    nextBeatIndex = startBeatIndex;
-    nextBeatTime = startTime;
-
-    // 1. Run the check loop more frequently (15ms instead of 25ms)
-    //    to handle the tighter tolerance.
-    const TICK_MS = 15;
+  // --- Audio Scheduler (Relative Time) ---
+  function scheduleBeats() {
+    const TICK_MS = 25; 
+    const LOOKAHEAD = 0.5; 
 
     const scheduleChunk = () => {
       if (!isPlaying || isPaused || !audioCtx) return;
@@ -950,36 +948,70 @@
       const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
       const spb = 60 / tempoNow;
 
-      // 2. TIGHTER LOOKAHEAD:
-      //    Instead of looking ahead 1-2 seconds (spb * 2.5), we only look 
-      //    ahead 0.15 seconds (150ms). This prevents the scheduler from 
-      //    "locking in" the count-off beats at the old tempo.
-      //    It forces the engine to use the LIVE tempo for every single click.
-      const horizon = audioCtx.currentTime + 0.15;
+      // Identify the next integer beat relative to visual position
+      let targetBeat = Math.ceil(playbackBeat);
 
-      while (nextBeatTime < horizon && nextBeatIndex < totalBeatsScheduled) {
-        const isDownbeat = (nextBeatIndex % MEASURE_BEATS) === 0;
+      // Ensure we don't re-schedule a beat we've already passed
+      if (targetBeat < nextBeatIndex) targetBeat = nextBeatIndex;
 
-        // Metronome Click
-        clickAt(nextBeatTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.10 : 0.06, 0.025);
+      while (targetBeat < totalBeatsScheduled) {
+        const beatsAway = targetBeat - playbackBeat;
+        const timeOffset = beatsAway * spb;
 
-        // Rhythms (skip if in count-off)
-        if (nextBeatIndex >= 0) {
-          const beatNotes = eventsByBeat[nextBeatIndex] || [];
+        // If it's too far in the future, stop scheduling this chunk
+        if (timeOffset > LOOKAHEAD) break;
+
+        const scheduleTime = audioCtx.currentTime + timeOffset;
+        
+        // --- Play Sound ---
+        // FIX: Allow negative beats (count-off) to be Downbeats (High Pitch)
+        // logic: -4 % 4 === -0, which is treated as 0 in JS equality checks.
+        const isDownbeat = (targetBeat % MEASURE_BEATS === 0);
+        
+        // Metronome Click (Play on every beat, including count-off)
+        // High click on 1, Low click on 2,3,4
+        clickAt(scheduleTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
+
+        // Rhythm Notes (Only strictly positive beats)
+        if (targetBeat >= 0) {
+          const beatNotes = eventsByBeat[targetBeat] || [];
           for (const n of beatNotes) {
-            clickAt(nextBeatTime + n.offset * spb, 650, 0.07, 0.03);
+            const noteTime = scheduleTime + (n.offset * spb);
+            clickAt(noteTime, 650, 0.07, 0.03);
           }
         }
 
-        nextBeatIndex += 1;
-        // 3. This increment now happens "Just In Time" using the 
-        //    latest `spb` from the slider.
-        nextBeatTime += spb;
+        nextBeatIndex = targetBeat + 1;
+        targetBeat++;
       }
     };
 
     schedulerId = window.setInterval(scheduleChunk, TICK_MS);
     scheduleChunk();
+  }
+
+  // --- Scrubber Logic ---
+  function handleScrub(e) {
+    if (!currentExercise) return;
+    const rect = barContainer.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    let pct = Math.max(0, Math.min(1, clickX / rect.width));
+    
+    // Jump visual playhead
+    playbackBeat = pct * totalBeatsScheduled;
+
+    // Reset Audio Scheduler Tracker
+    // We set nextBeatIndex to the next integer beat so the scheduler picks up immediately
+    nextBeatIndex = Math.ceil(playbackBeat);
+
+    // Update UI immediately
+    if (progressBar) progressBar.style.width = (pct * 100) + "%";
+    drawPlayheadAtBeat(playbackBeat);
+  }
+
+  if (barContainer) {
+    barContainer.style.cursor = "pointer";
+    barContainer.addEventListener("click", handleScrub);
   }
 
   function startMusic() {
@@ -988,11 +1020,18 @@
       if (!isPaused) {
         // --- START FRESH ---
         stop(); 
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // FIX: Ensure AudioContext is created and Resumed immediately
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+        
+        // Browsers sometimes start contexts in 'suspended' state. Force resume.
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
         
         const { events } = flattenEvents(currentExercise);
         
-        // FIX: Stop exactly at end of music (Removed + MEASURE_BEATS)
         totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
 
         const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
@@ -1006,25 +1045,16 @@
 
         // Initialize Live Accumulators
         lastAudioTime = audioCtx.currentTime;
-        
-        // FIX: Start at -4 for a 1-measure count-off
-        playbackBeat = -MEASURE_BEATS; 
-        
-        // Start Scheduling from count-off
-        scheduleBeats(-MEASURE_BEATS, audioCtx.currentTime + 0.05); 
+        playbackBeat = -MEASURE_BEATS; // Start at -4 (or whatever measure size is)
+        nextBeatIndex = -MEASURE_BEATS; 
+
+        scheduleBeats(); 
 
       } else {
         // --- RESUME ---
-        lastAudioTime = audioCtx.currentTime; // Reset delta anchor
-        
+        lastAudioTime = audioCtx.currentTime; 
         audioCtx.resume().then(() => {
-            const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
-            const spb = 60 / tempoNow;
-
-            const nextIntBeat = Math.ceil(playbackBeat);
-            const timeToNext = (nextIntBeat - playbackBeat) * spb;
-            
-            scheduleBeats(nextIntBeat, audioCtx.currentTime + timeToNext);
+            scheduleBeats();
         });
         isPaused = false;
       }
@@ -1065,7 +1095,8 @@
 
     isPlaying = false;
     isPaused = false;
-    playbackBeat = 0; // reset accumulator
+    playbackBeat = 0; 
+    nextBeatIndex = 0;
 
     playBtn.disabled = false;
     stopBtn.disabled = true;
@@ -1076,7 +1107,6 @@
     playheadRAF = null;
     clearPlayhead();
 
-    // Reset progress bar visually
     if (progressBar) progressBar.style.width = "0%";
   }
 
@@ -1085,7 +1115,7 @@
       else startMusic();
   }
 
-  // ---------- Wire up ---------
+  // ---------- Wire up ----------
   function regenerate() {
     try {
       stop(); 
