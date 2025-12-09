@@ -1,4 +1,4 @@
-(() => {
+window.addEventListener("DOMContentLoaded", () => {
   "use strict";
 
   const $ = (id) => document.getElementById(id);
@@ -25,8 +25,8 @@
   const progressBar = $("progressBar");
   const barContainer = $$(".bar");
 
-  const SHEET_DENSITY = 0.82; 
-  const END_BUFFER_BEATS = 0.25; 
+  const SHEET_DENSITY = 0.62; 
+  const END_BUFFER_BEATS = 0.25;
 
   function syncSliderFill(input) {
     const min = Number(input.min || 0);
@@ -506,6 +506,7 @@
     voice.setStrict(false);
     voice.addTickables(pack.notes);
 
+    // Calculate a rough minimum width based on contents
     const BASE = 170 * SHEET_DENSITY;
     const PER_NOTE = 18 * SHEET_DENSITY;
     const PER_TUPLET = 26 * SHEET_DENSITY;
@@ -520,54 +521,52 @@
     if (!(scoreEl instanceof HTMLCanvasElement)) throw new Error("Canvas needed");
 
     const totalMeasures = exercise.length;
+    // We pass 'true' for isFirstMeasure to add padding for the clef/time sig
     const packs = exercise.map((mm, i) => packMeasure(flow, mm, i === 0));
+
     const rectW = Math.floor(scoreWrapEl.getBoundingClientRect().width || 0);
     const MIN_CANVAS_W = 600;
-    const marginX = 20;
-    const marginY = 18;
-    const lineGap = 120;
-    const PREFERRED_PER_LINE = 6;
-    const MIN_MEASURE_W = 150;
+    
+    // Increase margins for a cleaner look
+    const marginX = 15; 
+    const marginY = 20;
+    const lineGap = 140; // More vertical space between systems
 
     let wrapW = Math.max(MIN_CANVAS_W, rectW - 24);
-    let usableW = wrapW - marginX * 2;
+    let usableW = wrapW - (marginX * 2);
 
-    function maxLineMinSum(mpl) {
-      let maxSum = 0;
-      for (let start = 0; start < totalMeasures; start += mpl) {
-        const end = Math.min(totalMeasures, start + mpl);
-        let sum = 0;
-        for (let i = start; i < end; i++) sum += packs[i].minW;
-        if (sum > maxSum) maxSum = sum;
-      }
-      return maxSum;
-    }
+    // --- IMPROVED SPACING LOGIC ---
+    // Calculate average minimum width required by the generated notes
+    const totalMinW = packs.reduce((sum, p) => sum + p.minW, 0);
+    const avgMinW = totalMinW / totalMeasures;
 
-    let measuresPerLine = Math.min(PREFERRED_PER_LINE, totalMeasures);
-    while (measuresPerLine > 1) {
-      const needed = maxLineMinSum(measuresPerLine);
-      if (needed <= usableW && (usableW / measuresPerLine) >= MIN_MEASURE_W) break;
-      measuresPerLine--;
-    }
-    measuresPerLine = Math.max(1, measuresPerLine);
+    // Decide measures per line based on content density, not just pixel width
+    // We cap it at 3 (or 2 if mobile) to ensure "Spread" look
+    let maxMeasuresPerLine = 3; 
+    if (usableW < 500) maxMeasuresPerLine = 2; // Mobile check
+    
+    let measuresPerLine = Math.floor(usableW / (avgMinW * 1.1)); 
+    measuresPerLine = Math.max(1, Math.min(measuresPerLine, maxMeasuresPerLine));
 
     const lines = Math.ceil(totalMeasures / measuresPerLine);
     const height = marginY * 2 + lines * lineGap;
-    const wrapBoxW = Math.floor(scoreWrapEl.getBoundingClientRect().width || 0);
-    const displayW = Math.max(320, wrapBoxW - 24);
-    const scale = Math.min(1, displayW / wrapW);
 
+    // High DPI scaling logic
+    const displayW = Math.max(320, rectW - 24);
+    const scale = Math.min(1, displayW / wrapW);
     const physW = Math.max(1, Math.floor(wrapW * scale));
     const physH = Math.max(1, Math.floor(height * scale));
 
     lastRenderScale = scale;
 
+    // Resize canvases
     if (playheadEl instanceof HTMLCanvasElement) {
       playheadEl.width = physW;
       playheadEl.height = physH;
       playheadEl.style.width = physW + "px";
       playheadEl.style.height = physH + "px";
     }
+    
     layoutMeasures = []; 
     clearPlayhead();
 
@@ -575,26 +574,11 @@
     renderer.resize(physW, physH);
     scoreEl.style.width = physW + "px";
     scoreEl.style.height = physH + "px";
-    scoreEl.style.verticalAlign = "top";
-
-    scoreWrapEl.style.position = "relative";
-    if (playheadEl instanceof HTMLCanvasElement) {
-      playheadEl.style.position = "absolute";
-      playheadEl.style.pointerEvents = "none";
-      playheadEl.width = scoreEl.width;
-      playheadEl.height = scoreEl.height;
-      playheadEl.style.width = scoreEl.style.width;
-      playheadEl.style.height = scoreEl.style.height;
-      playheadEl.style.left = scoreEl.offsetLeft + "px";
-      playheadEl.style.top = scoreEl.offsetTop + "px";
-      syncPlayheadOverlayPosition();
-    }
-
+    
+    // Context setup
     const ctx = renderer.getContext();
     ctx.setFont("Arial", 10, "");
-
-    if (ctx && ctx.clearRect) ctx.clearRect(0, 0, physW, physH);
-    if (ctx && ctx.context && ctx.context.clearRect) ctx.context.clearRect(0, 0, physW, physH);
+    if (ctx.clearRect) ctx.clearRect(0, 0, physW, physH);
 
     const raw = ctx.context || ctx;
     if (raw) {
@@ -611,170 +595,85 @@
       const y = marginY + line * lineGap;
       const lineStart = m;
       const lineEnd = Math.min(totalMeasures, lineStart + measuresPerLine);
-      const mins = [];
-      let sumMin = 0;
-      for (let i = lineStart; i < lineEnd; i++) {
-        const w = packs[i].minW;
-        mins.push(w);
-        sumMin += w;
-      }
-
-      const extra = Math.max(0, usableW - sumMin);
-      const widths = mins.slice();
-      if (extra > 0) {
-        const weightSum = sumMin || 1;
-        for (let i = 0; i < widths.length; i++) {
-          widths[i] = Math.floor(widths[i] + (extra * (mins[i] / weightSum)));
-        }
-        let diff = usableW - widths.reduce((a, b) => a + b, 0);
-        let k = 0;
-        while (diff > 0) { widths[k % widths.length]++; diff--; k++; }
-      }
+      const countOnLine = lineEnd - lineStart;
+      
+      // IMPORTANT: precise width division for evenness
+      const widthPerMeasure = usableW / countOnLine;
 
       let x = marginX;
-      for (let col = 0; col < widths.length; col++) {
+      for (let i = lineStart; i < lineEnd; i++) {
         if (m >= totalMeasures) break;
 
-        const w = widths[col];
-        const stave = new flow.Stave(x, y, w);
-        const x0 = (typeof stave.getNoteStartX === "function") ? stave.getNoteStartX() : (x + 20);
-        const staveTopY = (typeof stave.getYForLine === "function") ? (stave.getYForLine(0)) : (y + 10);
-        const staveBotY = (typeof stave.getYForLine === "function") ? (stave.getYForLine(4)) : (y + 50);
-
-        const V_PADDING = 10; 
-        const topY = staveTopY - V_PADDING;
-        const botY = staveBotY + V_PADDING;
-
-        layoutMeasures[m] = { x0, x1: x0, topY, botY, staveTopY, staveBotY }; 
-
-        if (stave.setStyle) stave.setStyle({ strokeStyle: "#000", fillStyle: "#000" });
-        if (m === 0 && line === 0 && col === 0) {
+        const stave = new flow.Stave(x, y, widthPerMeasure);
+        
+        // Add Clef/TimeSig only on the very first measure of the piece
+        if (m === 0) {
           stave.addClef("percussion").addTimeSignature("4/4");
+          // Add padding to the start of the note rendering area
+          stave.setNoteStartX(stave.getX() + 50); 
         }
+
         stave.setContext(ctx).draw();
 
         const pack = packs[m];
         const { beams, tuplets, voice } = pack;
 
-        if (voice.setContext) voice.setContext(ctx);
+        // Link VexFlow elements to the stave
         if (voice.setStave) voice.setStave(stave);
-        pack.notes.forEach((n) => {
-          n.setContext(ctx);
-          if (n.setStave) n.setStave(stave);
-        });
+        if (voice.setContext) voice.setContext(ctx);
 
-        const TRIPLET_REST_NUDGE_PX = 0;
-        pack.notes.forEach((n) => {
-          if (!n?.__tripletRest) return;
-          const y = (typeof stave.getYForLine === "function") ? stave.getYForLine(3) : null;
-          if (y != null && typeof n.setYs === "function") n.setYs([y + TRIPLET_REST_NUDGE_PX]);
-        });
-
+        // --- JUSTIFICATION ---
+        // This is what spreads the notes out evenly within the measure box
         const formatter = new flow.Formatter();
-        const makeGhost = (dur) => {
-          try { return new flow.GhostNote({ duration: dur }); }
-          catch { return new flow.GhostNote(dur); }
-        };
-        const guideNotes = [makeGhost("q"), makeGhost("q"), makeGhost("q"), makeGhost("q")];
-        const guideVoice = new flow.Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
-        guideVoice.addTickables(guideNotes);
-
-        if (guideVoice.setContext) guideVoice.setContext(ctx);
-        if (guideVoice.setStave) guideVoice.setStave(stave);
-        guideNotes.forEach((n) => { n.setContext?.(ctx); n.setStave?.(stave); });
-
-        formatter.joinVoices([voice, guideVoice]);
-        if (typeof formatter.formatToStave === "function") {
-          formatter.formatToStave([voice, guideVoice], stave);
-        } else {
-          const startX = typeof stave.getNoteStartX === "function" ? stave.getNoteStartX() : (x + 20);
-          const endX   = typeof stave.getNoteEndX === "function"   ? stave.getNoteEndX()   : (x + w - 20);
-          const avail = Math.max(60, (endX - startX) - 10);
-          formatter.format([voice, guideVoice], avail);
-        }
-
-        const gx = guideNotes.map((n) =>
-          (typeof n.getAbsoluteX === "function") ? n.getAbsoluteX()
-          : (n.getTickContext?.() ? n.getTickContext().getX() : null)
-        );
-
-        const endX = (typeof stave.getNoteEndX === "function") ? stave.getNoteEndX() : (x + w - 20);
-        const beatX = [
-          gx[0] ?? x0,
-          gx[1] ?? null,
-          gx[2] ?? null,
-          gx[3] ?? null,
-          endX
-        ];
-
-        const anchors = [];
-        anchors.push({ b: 0, x: beatX[0] });
-        for (let bi = 1; bi < MEASURE_BEATS; bi++) {
-          if (beatX[bi] != null) anchors.push({ b: bi, x: beatX[bi] });
-        }
-
-        pack.notes.forEach((n) => {
-          const isRest = (typeof n.isRest === "function") ? n.isRest() : false;
-          if (isRest) return;
-          const b = n.__beatPos;
-          if (b == null) return;
-          const x = (typeof n.getAbsoluteX === "function") ? n.getAbsoluteX() : (n.getTickContext?.() ? n.getTickContext().getX() : null);
-          if (x != null) anchors.push({ b, x });
-        });
-
-        anchors.push({ b: 4, x: beatX[4] });
-        anchors.sort((a, b) => (a.b - b.b) || (a.x - b.x));
-        
-        layoutMeasures[m] = { x0: beatX[0], x1: beatX[4], beatX, topY, botY, staveTopY, staveBotY, anchors };
-
-        const TRIPLET_REST_LINE = 3;
-        const TRIPLET_REST_NUDGE = 6;
-        pack.notes.forEach((n) => {
-          if (!n?.__tripletRest) return;
-          n.setKeyLine?.(0, TRIPLET_REST_LINE);
-          const y = (typeof stave.getYForLine === "function") ? stave.getYForLine(TRIPLET_REST_LINE) + TRIPLET_REST_NUDGE : null;
-          if (y != null) {
-            if (typeof n.setYs === "function") n.setYs([y]);
-            else n.ys = [y];
-          }
-          if (n.render_options) n.render_options.y_shift = TRIPLET_REST_NUDGE;
-        });
+        formatter.joinVoices([voice]).formatToStave([voice], stave);
 
         voice.draw(ctx, stave);
         beams.forEach((b) => b.setContext(ctx).draw());
         tuplets.forEach((t) => t.setContext(ctx).draw());
 
+        // Playhead calculations
+        const startX = stave.getNoteStartX();
+        const endX = stave.getNoteEndX();
+        const topY = y;
+        const botY = y + 100; // Fixed height for playhead area
+
+        const anchors = [];
+        anchors.push({ b: 0, x: startX });
+        anchors.push({ b: 4, x: endX });
+
+        pack.notes.forEach(n => {
+          if (typeof n.getAbsoluteX === 'function' && n.__beatPos !== undefined) {
+              anchors.push({ b: n.__beatPos, x: n.getAbsoluteX() });
+          }
+        });
+        anchors.sort((a,b) => a.b - b.b);
+
+        layoutMeasures[m] = { x0: startX, x1: endX, topY, botY, anchors };
+
         m++;
-        x += w;
+        x += widthPerMeasure;
       }
     }
     if (raw) raw.restore();
+    
+    if (accumulatedBeat > 0) drawPlayheadAtBeat(accumulatedBeat);
   }
 
 
-
-
-
-
-
-
-
-
-
-
-// ---------- Playback ----------
+  // ---------- Playback ----------
   const MEASURE_BEATS = 4;
    
   // SINGLETON AUDIO STATE (Fixes the "Ghost Player" glitch)
   let audioCtx = null; 
+  let masterGain = null; // Master volume for instant muting
   let isPlaying = false;
   let isPaused = false;
-  let schedulerTimer = null; // We use setTimeout now, not setInterval
+  let schedulerTimer = null; 
 
   // Timing / Sync
   let lastRenderScale = 1;
   let layoutMeasures = []; 
-  let playRunId = 0;
+  let playRunId = 0; // The "Ghost Killer" ID
   let playheadRAF = null;
    
   // Audio Scheduling State
@@ -783,9 +682,10 @@
   let totalBeatsScheduled = 0;
   let eventsByBeat = []; 
 
-  // Dynamic Playhead State (Accumulator)
-  let playbackBeat = 0;   
-  let lastAudioTime = 0; 
+  // Dynamic Playhead State (Differential Math)
+  let accumulatedBeat = 0;   // How many beats played BEFORE the last tempo change/resume
+  let audioStartTime = 0;    // When the current "chunk" of audio started (AudioContext time)
+  let lastTempoVal = 120;    // Tracker for tempo changes
 
   function syncPlayheadOverlayPosition() {
     if (!(playheadEl instanceof HTMLCanvasElement)) return;
@@ -803,13 +703,10 @@
   function xFromAnchors(geom, localBeat) {
     const a = geom?.anchors;
     if (!a || a.length < 2) {
-      const bx = geom.beatX || [geom.x0, null, null, null, geom.x1];
-      const b0 = Math.max(0, Math.min(MEASURE_BEATS - 1, Math.floor(localBeat)));
-      const frac = Math.max(0, Math.min(1, localBeat - b0));
-      const x0 = bx[b0] ?? geom.x0;
-      const x1 = bx[b0 + 1] ?? geom.x1;
-      return x0 + (x1 - x0) * frac;
+      // Fallback linear
+      return geom.x0 + (localBeat / 4) * (geom.x1 - geom.x0);
     }
+    // Interpolate accurately between note anchors
     let i = 0;
     while (i + 1 < a.length && a[i + 1].b <= localBeat + 1e-9) i++;
     const A = a[i];
@@ -880,29 +777,28 @@
 
     const tick = () => {
       if (!isPlaying || !audioCtx || isPaused) return;
-      if (runId !== playRunId) return;
+      if (runId !== playRunId) return; // Ghost check
 
       const now = audioCtx.currentTime;
-      const dt = now - lastAudioTime;
-      lastAudioTime = now;
-
-      // Visuals follow the same tempo math, but errors don't affect audio now
+      // DIFFERENTIAL SYNC:
+      // Current Beat = Beats_Before_Swap + (Time_Since_Swap / Seconds_Per_Beat)
       const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
       const spb = 60 / tempoNow;
+      const timeElapsed = now - audioStartTime;
+      
+      const currentBeat = accumulatedBeat + (timeElapsed / spb);
 
-      playbackBeat += dt / spb;
-
-      if (playbackBeat >= totalBeatsScheduled + END_BUFFER_BEATS) {
+      if (currentBeat >= totalBeatsScheduled + END_BUFFER_BEATS) {
         stop();
         return;
       }
 
-      drawPlayheadAtBeat(playbackBeat);
+      drawPlayheadAtBeat(currentBeat);
 
       if (progressBar) {
         const total = totalBeatsScheduled;
-        const current = Math.min(Math.max(0, playbackBeat), total);
-        const pct = (total > 0) ? (current / total) * 100 : 0;
+        const disp = Math.min(Math.max(0, currentBeat), total);
+        const pct = (total > 0) ? (disp / total) * 100 : 0;
         progressBar.style.width = pct + "%";
       }
 
@@ -914,31 +810,47 @@
 
   // --- Audio Utilities ---
   function clickAt(time, freq, gain, dur) {
-    if (!audioCtx) return;
+    if (!audioCtx || !masterGain) return;
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     o.type = "square";
     o.frequency.setValueAtTime(freq, time);
+    
+    // Connect to MASTER GAIN (for instant mute)
+    o.connect(g).connect(masterGain); 
+    
     g.gain.setValueAtTime(0.0001, time);
     g.gain.exponentialRampToValueAtTime(gain, time + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
-    o.connect(g).connect(audioCtx.destination);
     o.start(time);
     o.stop(time + dur + 0.05);
   }
 
   function flattenEvents(exercise) {
-    let beatPos = 0;
-    const events = [];
-    for (const meas of exercise) {
-      for (const beat of meas.beats) {
-        for (const e of beat) {
-          events.push({ beat: beatPos, kind: e.kind, beats: e.beats });
-          beatPos += e.beats;
-        }
-      }
-    }
-    return { events, totalBeats: beatPos };
+    // Robust Flattening Logic:
+    // Create an array of arrays, one for each beat index in the song
+    const totalBeats = exercise.length * 4;
+    const events = Array.from({ length: totalBeats }, () => []);
+    
+    let globalBeatIndex = 0;
+    
+    exercise.forEach(measure => {
+        measure.beats.forEach(beatGroup => {
+            // beatGroup is an array of note objects for this beat
+            // We assume standard VexFlow timing within the beat
+            let posInBeat = 0;
+            beatGroup.forEach(note => {
+               if (note.kind === 'note') {
+                   // Calculate offset from the start of the beat (0.0 to 0.99)
+                   events[globalBeatIndex].push({ offset: posInBeat });
+               }
+               posInBeat += note.beats; 
+            });
+            globalBeatIndex++;
+        });
+    });
+    
+    return { eventsByBeat: events, totalBeats };
   }
 
   // --- Audio Scheduler (Recursive Timeout - Glitch Free) ---
@@ -946,8 +858,8 @@
     if (!isPlaying || isPaused || !audioCtx) return;
 
     const TICK_MS = 50; 
-    const LOOKAHEAD = 1.0; 
-    const currentRunId = playRunId; // Closure capture
+    const LOOKAHEAD = 0.5; // Short lookahead for responsiveness
+    const currentRunId = playRunId; 
 
     const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
     const spb = 60 / tempoNow;
@@ -963,14 +875,15 @@
       if (nextBeatIndex < totalBeatsScheduled) {
            const isDownbeat = (nextBeatIndex % MEASURE_BEATS === 0);
            
-           // Metronome
+           // Metronome Click
            clickAt(nextNoteTime, isDownbeat ? 1200 : 900, isDownbeat ? 0.15 : 0.08, 0.03);
 
-           // Notes
+           // Rhythm Notes
            if (nextBeatIndex >= 0 && nextBeatIndex < eventsByBeat.length) {
              const beatNotes = eventsByBeat[nextBeatIndex] || [];
              for (const n of beatNotes) {
                const noteTime = nextNoteTime + (n.offset * spb);
+               // Only schedule if it hasn't passed drastically
                if (noteTime > audioCtx.currentTime - 0.05) {
                   clickAt(noteTime, 650, 0.07, 0.03);
                }
@@ -997,14 +910,25 @@
     const clickX = e.clientX - rect.left;
     let pct = Math.max(0, Math.min(1, clickX / rect.width));
     
-    playbackBeat = pct * totalBeatsScheduled;
-    nextBeatIndex = Math.ceil(playbackBeat);
-    if (audioCtx) {
-        nextNoteTime = audioCtx.currentTime + 0.05;
+    // Force Sync
+    accumulatedBeat = pct * totalBeatsScheduled;
+    
+    if (isPlaying && audioCtx) {
+        // Instant Audio Re-Sync
+        const now = audioCtx.currentTime;
+        const spb = 60 / Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+        
+        // Reset differential timer
+        audioStartTime = now;
+        
+        // Align scheduler
+        nextBeatIndex = Math.ceil(accumulatedBeat);
+        // Time of next beat = Now + (Fraction remaining * spb)
+        nextNoteTime = now + ((nextBeatIndex - accumulatedBeat) * spb);
     }
 
     if (progressBar) progressBar.style.width = (pct * 100) + "%";
-    drawPlayheadAtBeat(playbackBeat);
+    drawPlayheadAtBeat(accumulatedBeat);
   }
 
   if (barContainer) {
@@ -1012,47 +936,62 @@
     barContainer.addEventListener("click", handleScrub);
   }
 
-  function startMusic() {
+  function startMusic(isResuming = false) {
     if (!currentExercise) return;
     
-    // Strict restart if already playing
-    if (isPlaying && !isPaused) stop();
+    if (!isResuming && isPlaying && !isPaused) stop();
 
-    // Singleton Context (Don't destroy/recreate)
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!audioCtx) audioCtx = new AudioContext();
 
-    const { events } = flattenEvents(currentExercise);
-    totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
-    const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
-    eventsByBeat = Array.from({ length: beatsCount }, () => []);
-    
-    for (const ev of events) {
-      if (ev.kind !== "note") continue;
-      const b = Math.floor(ev.beat + 1e-9);
-      const offset = ev.beat - b;
-      if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
+    // Init Master Gain for instant mute capability
+    if (!masterGain) {
+        masterGain = audioCtx.createGain();
+        masterGain.connect(audioCtx.destination);
     }
+    
+    // Pre-calculate Events
+    const flat = flattenEvents(currentExercise);
+    eventsByBeat = flat.eventsByBeat;
+    totalBeatsScheduled = flat.totalBeats;
 
-    // Resume/Unlock
+    // Webflow/Chrome policy: Must resume if suspended
     audioCtx.resume().then(() => {
       // Setup State
       playBtn.disabled = false;
       stopBtn.disabled = false;
       isPlaying = true;
       isPaused = false;
-      playRunId++; 
+      playRunId++; // Kill any ghosts
       
       playBtnText.textContent = "Pause";
       setStatus("Playing", "play");
 
-      // Clocks
-      lastAudioTime = audioCtx.currentTime;
-      playbackBeat = -MEASURE_BEATS; 
-      nextBeatIndex = -MEASURE_BEATS;
-      nextNoteTime = audioCtx.currentTime + 0.1; 
+      // Unmute
+      masterGain.gain.cancelScheduledValues(0);
+      masterGain.gain.setValueAtTime(1, audioCtx.currentTime);
 
-      // Loops
+      const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+      const spb = 60 / tempoNow;
+      lastTempoVal = tempoNow;
+
+      if (isResuming) {
+        // --- RESUME LOGIC ---
+        // We start the timer NOW. 
+        // accumulatedBeat already holds where we were.
+        audioStartTime = audioCtx.currentTime;
+        
+        nextBeatIndex = Math.ceil(accumulatedBeat);
+        nextNoteTime = audioStartTime + ((nextBeatIndex - accumulatedBeat) * spb);
+      } else {
+        // --- FRESH START LOGIC ---
+        accumulatedBeat = -MEASURE_BEATS; // Count-in
+        audioStartTime = audioCtx.currentTime;
+        
+        nextBeatIndex = -MEASURE_BEATS;
+        nextNoteTime = audioCtx.currentTime + 0.1; 
+      }
+
       if (schedulerTimer) clearTimeout(schedulerTimer);
       scheduleBeats(); 
       startPlayheadLoop(playRunId);
@@ -1066,11 +1005,23 @@
   function pauseMusic() {
       if (!isPlaying || !audioCtx || isPaused) return;
 
+      // 1. Instant Mute (Critical for responsiveness)
+      if (masterGain) {
+          masterGain.gain.cancelScheduledValues(0);
+          masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+      }
+
+      // 2. Freeze Math (Bake current time into accumulatedBeat)
+      const now = audioCtx.currentTime;
+      const spb = 60 / lastTempoVal;
+      accumulatedBeat += (now - audioStartTime) / spb;
+
       if (schedulerTimer) {
         clearTimeout(schedulerTimer);
         schedulerTimer = null;
       }
 
+      // 3. Suspend (optional, but good for saving battery on mobile)
       audioCtx.suspend().then(() => {
           isPaused = true;
           isPlaying = false;
@@ -1080,20 +1031,18 @@
   }
 
   function stop() {
-    playRunId++; // Kill ghost schedulers
+    playRunId++; // Kill ghosts
     
     isPlaying = false;
     isPaused = false;
     
-    if (schedulerTimer) {
-        clearTimeout(schedulerTimer);
-        schedulerTimer = null;
-    }
+    if (schedulerTimer) clearTimeout(schedulerTimer);
+    if (masterGain && audioCtx) masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
 
     cancelAnimationFrame(playheadRAF || 0);
     playheadRAF = null;
 
-    playbackBeat = 0; 
+    accumulatedBeat = 0; 
     nextBeatIndex = 0;
 
     playBtn.disabled = false;
@@ -1107,19 +1056,8 @@
 
   function togglePlayPause() {
       if (isPlaying && !isPaused) pauseMusic();
-      else startMusic();
+      else startMusic(isPaused);
   }
-
-
-
-
-
-
-
-
-
-
-
 
   // ---------- Wire up ----------
   function regenerate() {
@@ -1140,9 +1078,34 @@
     }
   }
 
+  // TEMPO HOT SWAP (Differential Math)
   tempoEl.addEventListener("input", () => {
     tempoValEl.textContent = tempoEl.value;
     syncSliderFill(tempoEl);
+    
+    if (isPlaying && !isPaused && audioCtx) {
+        const now = audioCtx.currentTime;
+        const newTempo = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+        
+        // 1. Calculate how much we progressed at the OLD tempo
+        const oldSpb = 60 / lastTempoVal;
+        const elapsed = now - audioStartTime;
+        accumulatedBeat += (elapsed / oldSpb);
+        
+        // 2. Reset the timer to NOW
+        audioStartTime = now;
+        
+        // 3. Update Tempo ref
+        lastTempoVal = newTempo;
+        
+        // 4. Re-align Scheduler
+        // We do NOT change accumulatedBeat here, we just change how fast we add to it
+        const newSpb = 60 / newTempo;
+        nextBeatIndex = Math.ceil(accumulatedBeat);
+        nextNoteTime = now + ((nextBeatIndex - accumulatedBeat) * newSpb);
+    } else {
+        lastTempoVal = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+    }
   });
 
   restsEl.addEventListener("input", () => {
@@ -1156,7 +1119,11 @@
  
   window.addEventListener("resize", () => {
     if (!currentExercise) return;
-    try { render(currentExercise); syncPlayheadOverlayPosition(); } catch (e) { showError(e); }
+    try { 
+        render(currentExercise); 
+        syncPlayheadOverlayPosition(); 
+        if (accumulatedBeat > 0) drawPlayheadAtBeat(accumulatedBeat);
+    } catch (e) { showError(e); }
   });
 
   tempoValEl.textContent = tempoEl.value;
@@ -1166,4 +1133,4 @@
 
   safeRenderAllIcons();
   regenerate();
-})();
+});
