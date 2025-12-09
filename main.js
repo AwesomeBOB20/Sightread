@@ -932,7 +932,7 @@
   // --- Audio Scheduler (Webflow-Safe + High Precision Clock) ---
   function scheduleBeats() {
     const TICK_MS = 50; 
-    const LOOKAHEAD = 0.8; 
+    const LOOKAHEAD = 1.0; 
 
     const scheduleChunk = () => {
       if (!isPlaying || isPaused || !audioCtx) return;
@@ -1008,59 +1008,85 @@
   }
 
   function startMusic() {
-      if (!currentExercise) return;
+    if (!currentExercise) return;
+
+    // Prevent double-clicking while waiting for audio to wake up
+    if (playBtn.disabled) return; 
+
+    if (!isPaused) {
+      // --- START FRESH ---
+      stop();
+
+      // temporary UI lock
+      playBtn.disabled = true; 
+      playBtnText.textContent = "Loading...";
+
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContext();
+
+      // 1. Flatten events first
+      const { events } = flattenEvents(currentExercise);
+      totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
+      const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
       
-      if (!isPaused) {
-        // --- START FRESH ---
-        stop(); 
-        
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        audioCtx = new AudioContext();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        
-        const { events } = flattenEvents(currentExercise);
-        
-        totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
+      eventsByBeat = Array.from({ length: beatsCount }, () => []);
+      for (const ev of events) {
+        if (ev.kind !== "note") continue;
+        const b = Math.floor(ev.beat + 1e-9);
+        const offset = ev.beat - b;
+        if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
+      }
 
-        const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
-        eventsByBeat = Array.from({ length: beatsCount }, () => []);
-        for (const ev of events) {
-          if (ev.kind !== "note") continue;
-          const b = Math.floor(ev.beat + 1e-9);
-          const offset = ev.beat - b;
-          if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
-        }
+      // 2. RESUME/UNLOCK the Audio Context explicitly
+      audioCtx.resume().then(() => {
+        // 3. ONLY start scheduling once the hardware is actually ready
+        
+        playBtn.disabled = false; // Unlock UI
+        stopBtn.disabled = false;
+        isPlaying = true;
+        playBtnText.textContent = "Pause";
+        setStatus("Playing", "play");
 
-        // Initialize Clocks
+        // Initialize Clocks based on the *confirmed* active time
         lastAudioTime = audioCtx.currentTime;
         playbackBeat = -MEASURE_BEATS; 
         
-        // Start Clock relative to NOW
+        // Start Clock relative to NOW (adding a slightly larger buffer for Webflow)
         nextBeatIndex = -MEASURE_BEATS;
-        nextNoteTime = audioCtx.currentTime + 0.1;
+        nextNoteTime = audioCtx.currentTime + 0.15; 
 
         scheduleBeats(); 
+        startPlayheadLoop(playRunId);
+      }).catch(e => {
+        console.error("Audio resume failed", e);
+        playBtn.disabled = false;
+        playBtnText.textContent = "Play";
+        setStatus("Audio Error");
+      });
 
-      } else {
-        // --- RESUME ---
-        lastAudioTime = audioCtx.currentTime; 
-        audioCtx.resume().then(() => {
-            // Re-align audio clock to NOW
-            nextNoteTime = audioCtx.currentTime + 0.1;
-            // Ensure nextBeatIndex matches where visual playhead is
-            nextBeatIndex = Math.ceil(playbackBeat);
-            scheduleBeats();
-        });
-        isPaused = false;
-      }
-
-      isPlaying = true;
-      playBtn.disabled = false;
-      stopBtn.disabled = false;
-      playBtnText.textContent = "Pause";
-      setStatus("Playing", "play");
+    } else {
+      // --- RESUME FROM PAUSE ---
+      playBtn.disabled = true;
       
-      startPlayheadLoop(playRunId);
+      audioCtx.resume().then(() => {
+        playBtn.disabled = false;
+        stopBtn.disabled = false;
+        isPlaying = true;
+        isPaused = false;
+        playBtnText.textContent = "Pause";
+        setStatus("Playing", "play");
+
+        lastAudioTime = audioCtx.currentTime; 
+        
+        // Re-align audio clock to NOW
+        nextNoteTime = audioCtx.currentTime + 0.1;
+        // Ensure nextBeatIndex matches where visual playhead is
+        nextBeatIndex = Math.ceil(playbackBeat);
+        
+        scheduleBeats();
+        startPlayheadLoop(playRunId); // Restart the visual loop
+      });
+    }
   }
 
   function pauseMusic() {
