@@ -74,15 +74,22 @@ body{
   justify-content:center;
 }
 
-/* Field blocks */
-.field{
+/* Field blocks (Renamed to avoid Webflow collisions) */
+.rdm-field{
   display:flex;
   flex-direction:column;
   gap:8px;
   align-items:stretch;
   min-width:220px;
+
+  /* SAFETY: Force remove any unwanted borders/bg inherited from Webflow defaults */
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
-.field > span{
+
+.rdm-field > span{
   color:#fff;
   font-size:1.1rem;
 }
@@ -109,7 +116,7 @@ body{
 
 
 /* Inputs */
-.field input[type="number"]{
+.rdm-field input[type="number"]{
   width:100%;
   height:44px;
   padding:8px;
@@ -259,7 +266,7 @@ body{
 
 
 /* === Slider (exact thumb + track style you like) === */
-.field input[type="range"]{
+.rdm-field input[type="range"]{
   --thumb:24px;
   --fill: var(--purple); /* default fill */
   width:100%;
@@ -271,7 +278,7 @@ body{
   appearance:none;
   outline:none;
 }
-.field input[type="range"]::-webkit-slider-thumb{
+.rdm-field input[type="range"]::-webkit-slider-thumb{
   -webkit-appearance:none;
   width:var(--thumb);
   height:var(--thumb);
@@ -281,11 +288,11 @@ body{
   cursor:pointer;
 }
 
-.field input[type="range"].slider-fill{ --fill: var(--purple); }
-.field input[type="range"].slider--orange{ --fill: var(--orange); }
+.rdm-field input[type="range"].slider-fill{ --fill: var(--purple); }
+.rdm-field input[type="range"].slider--orange{ --fill: var(--orange); }
 
 
-.field input[type="range"]::-moz-range-thumb{
+.rdm-field input[type="range"]::-moz-range-thumb{
   width:var(--thumb);
   height:var(--thumb);
   background:#fff;
@@ -295,9 +302,9 @@ body{
 }
 
 /* iOS: only thumb interactive */
-.is-ios .field input[type="range"] { touch-action: manipulation; }
-.is-ios .field input[type="range"]::-webkit-slider-runnable-track { pointer-events:none; }
-.is-ios .field input[type="range"]::-webkit-slider-thumb { pointer-events:auto; }
+.is-ios .rdm-field input[type="range"] { touch-action: manipulation; }
+.is-ios .rdm-field input[type="range"]::-webkit-slider-runnable-track { pointer-events:none; }
+.is-ios .rdm-field input[type="range"]::-webkit-slider-thumb { pointer-events:auto; }
 
 /* === Main area === */
 .main{ margin-top:0; }
@@ -328,7 +335,7 @@ body{
   background:var(--blue);
   padding:12px;
 
-overflow-x:hidden;    /* HIDE horizontal scroll */
+  overflow-x:hidden;    /* HIDE horizontal scroll */
   overflow-y:auto;      /* KEEP vertical scroll */
   text-align:center;    /* center the stack when it’s smaller than wrap */
 }
@@ -355,17 +362,6 @@ overflow-x:hidden;    /* HIDE horizontal scroll */
   justify-content:center;
   gap:14px;
   flex-wrap:wrap;
-}
-
-.optionsCard{
-  width:min(100%, 1200px);
-  margin:0 auto;
-  border:2px solid var(--black);
-  border-radius:12px;
-  background:var(--blue);  
-  padding:12px;
-  display:flex;
-  justify-content:center;
 }
 
 /* Rhythm tile (Triplets) */
@@ -497,6 +493,6 @@ overflow-x:hidden;    /* HIDE horizontal scroll */
 /* Responsive */
 @media (max-width:700px){
   .wrap{ width:92%; margin:10px auto; }
-  .field{ min-width:0; width:100%; }
+  .rdm-field{ min-width:0; width:100%; }
   .btn{ width:100%; max-width:520px; }
 }
