@@ -4,8 +4,7 @@
 :root{
   --black:#000; --white:#fff;
   --bg:#1c1c1c;
---section-gap:20px;
-
+  --section-gap:20px;
 
   /* Oranges */
   --orange:#d35400;
@@ -322,16 +321,28 @@ body{
 
 .scoreWrap{
   width:min(100%, 1200px);
-  margin:0 auto;                 /* centered */
+  margin:0 auto;
   margin-bottom: var(--section-gap);
   border:2px solid var(--black);
   border-radius:12px;
   background:var(--blue);
   padding:12px;
-  overflow:hidden;               /* shouldn’t clip anymore once JS matches sizes */
-  display:flex;                  /* centers canvas if it’s narrower */
-  justify-content:center;
+
+overflow-x:hidden;    /* HIDE horizontal scroll */
+  overflow-y:auto;      /* KEEP vertical scroll */
+  text-align:center;    /* center the stack when it’s smaller than wrap */
 }
+
+.scoreStack{
+  position:relative;
+  display:inline-block; /* sizes to the canvases; scroll stays accurate */
+}
+
+.score, .playhead {
+  display: block;
+  vertical-align: top; /* Ensures no baseline space below/above */
+}
+
 
 .optionsCard{
   width:min(100%, 1200px);
@@ -450,11 +461,36 @@ body{
 
 .score{
   display:block;
-  width:100%;               /* scale canvas to wrap */
-  height:auto;              /* keep aspect ratio */
   background:#fff;
   border:2px solid var(--black);
   border-radius:10px;
+  /* IMPORTANT: do NOT force width:100% / height:auto.
+     Your JS sets exact pixel sizes for perfect overlay alignment. */
+}
+
+.playhead{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+}
+
+/* === Progress Bar (New) === */
+.bar {
+  position: relative;
+  height: 40px;              /* Matches reference code */
+  background: var(--white);
+  border: 2px solid var(--black);
+  overflow: hidden;
+  margin: 0 auto 20px auto;  /* Centered, bottom spacing */
+  border-radius: 5px;        /* Matches reference code */
+  width: min(100%, 1200px);  /* Matches score width */
+}
+
+.bar__fill {
+  height: 100%;
+  background: var(--orange); /* Matches reference code */
+  width: 0%;                 /* JS will update this */
+  transition: width 0.1s linear;
 }
 
 
