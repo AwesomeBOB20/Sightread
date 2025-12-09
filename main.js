@@ -1010,83 +1010,67 @@
   function startMusic() {
     if (!currentExercise) return;
 
-    // Prevent double-clicking while waiting for audio to wake up
-    if (playBtn.disabled) return; 
+    // 1. Force a hard stop to clear any existing intervals immediately
+    stop(); 
 
-    if (!isPaused) {
-      // --- START FRESH ---
-      stop();
+    // 2. Lock the button to prevent accidental double-triggering
+    playBtn.disabled = true;
+    playBtnText.textContent = "Loading...";
 
-      // temporary UI lock
-      playBtn.disabled = true; 
-      playBtnText.textContent = "Loading...";
+    // 3. Increment the Run ID. This is our "Ticket Number".
+    // We already have playRunId (used for visuals), let's use it for audio too.
+    const myRunId = playRunId; 
 
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new AudioContext();
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContext();
 
-      // 1. Flatten events first
-      const { events } = flattenEvents(currentExercise);
-      totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
-      const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
-      
-      eventsByBeat = Array.from({ length: beatsCount }, () => []);
-      for (const ev of events) {
-        if (ev.kind !== "note") continue;
-        const b = Math.floor(ev.beat + 1e-9);
-        const offset = ev.beat - b;
-        if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
-      }
-
-      // 2. RESUME/UNLOCK the Audio Context explicitly
-      audioCtx.resume().then(() => {
-        // 3. ONLY start scheduling once the hardware is actually ready
-        
-        playBtn.disabled = false; // Unlock UI
-        stopBtn.disabled = false;
-        isPlaying = true;
-        playBtnText.textContent = "Pause";
-        setStatus("Playing", "play");
-
-        // Initialize Clocks based on the *confirmed* active time
-        lastAudioTime = audioCtx.currentTime;
-        playbackBeat = -MEASURE_BEATS; 
-        
-        // Start Clock relative to NOW (adding a slightly larger buffer for Webflow)
-        nextBeatIndex = -MEASURE_BEATS;
-        nextNoteTime = audioCtx.currentTime + 0.15; 
-
-        scheduleBeats(); 
-        startPlayheadLoop(playRunId);
-      }).catch(e => {
-        console.error("Audio resume failed", e);
-        playBtn.disabled = false;
-        playBtnText.textContent = "Play";
-        setStatus("Audio Error");
-      });
-
-    } else {
-      // --- RESUME FROM PAUSE ---
-      playBtn.disabled = true;
-      
-      audioCtx.resume().then(() => {
-        playBtn.disabled = false;
-        stopBtn.disabled = false;
-        isPlaying = true;
-        isPaused = false;
-        playBtnText.textContent = "Pause";
-        setStatus("Playing", "play");
-
-        lastAudioTime = audioCtx.currentTime; 
-        
-        // Re-align audio clock to NOW
-        nextNoteTime = audioCtx.currentTime + 0.1;
-        // Ensure nextBeatIndex matches where visual playhead is
-        nextBeatIndex = Math.ceil(playbackBeat);
-        
-        scheduleBeats();
-        startPlayheadLoop(playRunId); // Restart the visual loop
-      });
+    // Flatten events
+    const { events } = flattenEvents(currentExercise);
+    totalBeatsScheduled = currentExercise.length * MEASURE_BEATS;
+    const beatsCount = Math.ceil(totalBeatsScheduled + 1e-6);
+    eventsByBeat = Array.from({ length: beatsCount }, () => []);
+    
+    for (const ev of events) {
+      if (ev.kind !== "note") continue;
+      const b = Math.floor(ev.beat + 1e-9);
+      const offset = ev.beat - b;
+      if (b >= 0 && b < eventsByBeat.length) eventsByBeat[b].push({ offset });
     }
+
+    // 4. Resume Audio Context
+    audioCtx.resume().then(() => {
+      // --- CRITICAL CHECK ---
+      // If the user clicked Stop or Play again while we were waiting,
+      // myRunId will no longer match the global playRunId.
+      // If so, ABORT. Do not start the scheduler.
+      if (playRunId !== myRunId) {
+         return; 
+      }
+      
+      // If we are here, we are the valid player. Unlock UI.
+      playBtn.disabled = false;
+      stopBtn.disabled = false;
+      isPlaying = true;
+      playBtnText.textContent = "Pause";
+      setStatus("Playing", "play");
+
+      // 5. Reset Clocks to NOW (Fixes the "Machine Gun" catch-up effect)
+      lastAudioTime = audioCtx.currentTime;
+      playbackBeat = -MEASURE_BEATS; 
+      nextBeatIndex = -MEASURE_BEATS;
+      
+      // Give it a tiny buffer (0.1s) so the first note doesn't sound "choked"
+      nextNoteTime = audioCtx.currentTime + 0.1; 
+
+      scheduleBeats(); 
+      startPlayheadLoop(playRunId);
+
+    }).catch(e => {
+      console.error("Audio resume failed", e);
+      playBtn.disabled = false;
+      playBtnText.textContent = "Play";
+      setStatus("Audio Error");
+    });
   }
 
   function pauseMusic() {
