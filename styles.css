@@ -767,7 +767,6 @@ input[type=range]::-webkit-slider-thumb {
   cursor: pointer;
   -webkit-appearance: none;
   margin-top: -7px; 
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
 
 /* Purple Slider Fill (Tempo) */
@@ -915,7 +914,6 @@ input[type=range]::-webkit-slider-thumb {
   font-family: inherit;
   cursor: pointer;
   font-size: 1.2rem;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
   transition: transform 0.1s, opacity 0.2s;
 }
 
