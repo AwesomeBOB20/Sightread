@@ -24,6 +24,11 @@ window.addEventListener("DOMContentLoaded", () => {
   const playBtnText = $("playBtnText");
   const progressBar = $("progressBar");
   const barContainer = $$(".bar");
+  const stickingStrategyEl = $("stickingStrategy");
+  
+  // NEW: Time Elements
+  const currentTimeEl = $("currentTime");
+  const totalTimeEl = $("totalTime");
 
   const SHEET_DENSITY = 0.62; 
   const END_BUFFER_BEATS = 0.25;
@@ -55,6 +60,13 @@ window.addEventListener("DOMContentLoaded", () => {
   function clearError() {
     errorEl.hidden = true;
     errorEl.textContent = "";
+  }
+  
+  // NEW: Time Formatter
+  function formatTime(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
   // ---------- VexFlow guard ----------
@@ -346,8 +358,100 @@ window.addEventListener("DOMContentLoaded", () => {
     return beat;
   }
 
-  function generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets }) {
-    const out = [];
+function applySticking(exercise, strategy) {
+    if (!exercise) return;
+    
+    // Clear old stickings
+    exercise.forEach(m => m.beats.forEach(b => b.forEach(n => delete n.sticking)));
+    
+    if (strategy === "none") return;
+
+    // SEQUENTIAL PATTERNS (Alternate, Doubles, Paradiddle)
+    // These ignore time and just alternate based on the note count
+    if (["alternate", "doubles", "paradiddle"].includes(strategy)) {
+      let pattern = [];
+      if (strategy === "alternate") pattern = ["R", "L"];
+      if (strategy === "doubles") pattern = ["R", "R", "L", "L"];
+      if (strategy === "paradiddle") pattern = ["R", "L", "R", "R", "L", "R", "L", "L"];
+      
+      let idx = 0;
+      exercise.forEach(m => {
+        m.beats.forEach(beat => {
+          beat.forEach(n => {
+            if (n.kind === "note") {
+              n.sticking = pattern[idx % pattern.length];
+              idx++;
+            }
+          });
+        });
+      });
+      return;
+    }
+
+    // NATURAL STICKING (The Grid Logic)
+    if (strategy === "natural") {
+      let leadHand = "R"; 
+      const other = (h) => (h === "R" ? "L" : "R");
+
+      exercise.forEach(m => {
+        m.beats.forEach(beat => {
+          const isTriplet = !!beat._tuplet;
+
+          if (isTriplet) {
+            // TRIPLET GRID: 1-trip-let (3 slots)
+            // Slot 0 (1)    = Lead
+            // Slot 1 (trip) = Other
+            // Slot 2 (let)  = Lead
+            
+            let pos = 0;
+            const startHand = leadHand;
+            
+            beat.forEach(n => {
+              // We use approximate matching for 1/3 and 2/3
+              // 0.00 = 1st partial
+              // 0.33 = 2nd partial
+              // 0.66 = 3rd partial
+              if (n.kind === "note") {
+                 const isFirst  = Math.abs(pos - 0) < 0.05;
+                 const isSecond = Math.abs(pos - (1/3)) < 0.05;
+                 const isThird  = Math.abs(pos - (2/3)) < 0.05;
+
+                 if (isFirst) n.sticking = startHand;
+                 else if (isSecond) n.sticking = other(startHand);
+                 else if (isThird) n.sticking = startHand; // R L R pattern -> 3rd is Right again
+              }
+              pos += n.beats;
+            });
+
+            // A triplet beat (3 partials) always flips the parity of the hand 
+            // R L R -> Next beat starts L
+            leadHand = other(leadHand); 
+
+          } else {
+            // BINARY GRID: 16th notes (1 e & a)
+            let pos = 0; 
+            beat.forEach(n => {
+              if (n.kind === "note") {
+                const isDown   = Math.abs(pos - 0) < 0.01;
+                const isUp     = Math.abs(pos - 0.5) < 0.01;
+                const isE      = Math.abs(pos - 0.25) < 0.01;
+                const isA      = Math.abs(pos - 0.75) < 0.01;
+
+                if (isDown || isUp) n.sticking = leadHand;
+                else if (isE || isA) n.sticking = other(leadHand);
+                else n.sticking = leadHand; 
+              }
+              pos += n.beats;
+            });
+            // Binary beats maintain parity (even number of 16ths in a beat)
+            // Lead hand stays the same for the next beat
+          }
+        });
+      });
+    }
+  }
+
+  function generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets }) {    const out = [];
     for (let m = 0; m < measures; m++) {
       const beats = [];
       for (let b = 0; b < 4; b++) {
@@ -377,8 +481,14 @@ window.addEventListener("DOMContentLoaded", () => {
       duration,
     });
 
-    if (isRest) note.setKeyLine(0, 3);
+  if (isRest) note.setKeyLine(0, 3);
 
+    if (!isRest && elem.sticking) {
+      const text = new flow.Annotation(elem.sticking)
+        .setFont("Arial", 10, "bold")
+        .setVerticalJustification(flow.Annotation.VerticalJustify.BOTTOM);
+      note.addModifier(text);
+    }
     const dots = Math.max(0, Number(elem.dots || 0));
     if (dots > 0) {
       if (flow.Dot?.buildAndAttach) {
@@ -524,15 +634,31 @@ window.addEventListener("DOMContentLoaded", () => {
     // We pass 'true' for isFirstMeasure to add padding for the clef/time sig
     const packs = exercise.map((mm, i) => packMeasure(flow, mm, i === 0));
 
-    const rectW = Math.floor(scoreWrapEl.getBoundingClientRect().width || 0);
+    // --- PIXEL PERFECT WIDTH CALCULATION ---
+    // 1. Get the container's inner width (clientWidth excludes border/scrollbar)
+    // We default to 600 if the container is hidden/missing to prevent crashes.
+    const containerInnerW = scoreWrapEl.clientWidth || 600;
+    
+    // 2. Subtract the padding defined in CSS (dynamically fetched)
+    const styles = window.getComputedStyle(scoreWrapEl);
+    const padL = parseFloat(styles.paddingLeft) || 0;
+    const padR = parseFloat(styles.paddingRight) || 0;
+    
+    // 3. Exact pixel width available for the canvas
+    const availW = containerInnerW - padL - padR;
+
     const MIN_CANVAS_W = 600;
     
-    // Increase margins for a cleaner look
+    // Increase margins for a cleaner look inside the canvas
     const marginX = 15; 
     const marginY = 20;
-    const lineGap = 140; // More vertical space between systems
+    const lineGap = 140; 
 
-    let wrapW = Math.max(MIN_CANVAS_W, rectW - 24);
+    // Set canvas width to exactly fill the available space
+    // We verify it doesn't drop below MIN unless the screen is tiny (mobile)
+    let wrapW = Math.max(MIN_CANVAS_W, availW);
+    if (availW < MIN_CANVAS_W) wrapW = availW;
+
     let usableW = wrapW - (marginX * 2);
 
     // --- IMPROVED SPACING LOGIC ---
@@ -540,8 +666,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const totalMinW = packs.reduce((sum, p) => sum + p.minW, 0);
     const avgMinW = totalMinW / totalMeasures;
 
-    // Decide measures per line based on content density, not just pixel width
-    // We cap it at 3 (or 2 if mobile) to ensure "Spread" look
+    // Decide measures per line based on content density
     let maxMeasuresPerLine = 3; 
     if (usableW < 500) maxMeasuresPerLine = 2; // Mobile check
     
@@ -552,14 +677,14 @@ window.addEventListener("DOMContentLoaded", () => {
     const height = marginY * 2 + lines * lineGap;
 
     // High DPI scaling logic
-    const displayW = Math.max(320, rectW - 24);
+    const displayW = Math.max(320, wrapW); 
     const scale = Math.min(1, displayW / wrapW);
     const physW = Math.max(1, Math.floor(wrapW * scale));
     const physH = Math.max(1, Math.floor(height * scale));
 
     lastRenderScale = scale;
 
-    // Resize canvases
+    // Resize playhead canvas if it exists
     if (playheadEl instanceof HTMLCanvasElement) {
       playheadEl.width = physW;
       playheadEl.height = physH;
@@ -575,12 +700,30 @@ window.addEventListener("DOMContentLoaded", () => {
     scoreEl.style.width = physW + "px";
     scoreEl.style.height = physH + "px";
     
-    // Context setup
+    // Context setup - ERROR FIX: Safety check for ctx
     const ctx = renderer.getContext();
-    ctx.setFont("Arial", 10, "");
-    if (ctx.clearRect) ctx.clearRect(0, 0, physW, physH);
+    if (ctx) {
+        // Handle font setting safely
+        if (typeof ctx.setFont === 'function') {
+            ctx.setFont("Arial", 10, "");
+        } else if (ctx.font !== undefined) {
+            ctx.font = "10px Arial";
+        }
+        
+        // Clear rect safely
+        if (typeof ctx.clearRect === 'function') {
+            ctx.clearRect(0, 0, physW, physH);
+        } else if (ctx.rect && ctx.fill) {
+            // Fallback clear
+            ctx.save();
+            ctx.fillStyle = "#ffffff";
+            ctx.rect(0, 0, physW, physH);
+            ctx.fill();
+            ctx.restore();
+        }
+    }
 
-    const raw = ctx.context || ctx;
+    const raw = (ctx && ctx.context) ? ctx.context : ctx;
     if (raw) {
       raw.fillStyle = "#000";
       raw.strokeStyle = "#000";
@@ -597,7 +740,6 @@ window.addEventListener("DOMContentLoaded", () => {
       const lineEnd = Math.min(totalMeasures, lineStart + measuresPerLine);
       const countOnLine = lineEnd - lineStart;
       
-      // IMPORTANT: precise width division for evenness
       const widthPerMeasure = usableW / countOnLine;
 
       let x = marginX;
@@ -609,7 +751,6 @@ window.addEventListener("DOMContentLoaded", () => {
         // Add Clef/TimeSig only on the very first measure of the piece
         if (m === 0) {
           stave.addClef("percussion").addTimeSignature("4/4");
-          // Add padding to the start of the note rendering area
           stave.setNoteStartX(stave.getX() + 50); 
         }
 
@@ -618,12 +759,9 @@ window.addEventListener("DOMContentLoaded", () => {
         const pack = packs[m];
         const { beams, tuplets, voice } = pack;
 
-        // Link VexFlow elements to the stave
         if (voice.setStave) voice.setStave(stave);
         if (voice.setContext) voice.setContext(ctx);
 
-        // --- JUSTIFICATION ---
-        // This is what spreads the notes out evenly within the measure box
         const formatter = new flow.Formatter();
         formatter.joinVoices([voice]).formatToStave([voice], stave);
 
@@ -635,7 +773,7 @@ window.addEventListener("DOMContentLoaded", () => {
         const startX = stave.getNoteStartX();
         const endX = stave.getNoteEndX();
         const topY = y;
-        const botY = y + 100; // Fixed height for playhead area
+        const botY = y + 100;
 
         const anchors = [];
         anchors.push({ b: 0, x: startX });
@@ -686,6 +824,22 @@ window.addEventListener("DOMContentLoaded", () => {
   let accumulatedBeat = 0;   // How many beats played BEFORE the last tempo change/resume
   let audioStartTime = 0;    // When the current "chunk" of audio started (AudioContext time)
   let lastTempoVal = 120;    // Tracker for tempo changes
+
+  // NEW: Update time display function
+  function updateTimeDisplays() {
+    const tempo = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
+    const spb = 60 / tempo;
+    
+    // Total Time
+    const totalSeconds = totalBeatsScheduled * spb;
+    if(totalTimeEl) totalTimeEl.textContent = formatTime(totalSeconds);
+
+    // Current Time
+    // Clamp between 0 and totalBeats
+    const currentBeat = Math.max(0, Math.min(totalBeatsScheduled, accumulatedBeat));
+    const currentSeconds = currentBeat * spb;
+    if(currentTimeEl) currentTimeEl.textContent = formatTime(currentSeconds);
+  }
 
   function syncPlayheadOverlayPosition() {
     if (!(playheadEl instanceof HTMLCanvasElement)) return;
@@ -794,6 +948,12 @@ window.addEventListener("DOMContentLoaded", () => {
       }
 
       drawPlayheadAtBeat(currentBeat);
+      
+      // NEW: Update live Time Display in loop
+      // We manually update the 'accumulatedBeat' variable for the UI briefly to calculate time
+      // But we don't save it to the global scope yet, as that's handled by pause/stop logic.
+      const beatForUI = Math.max(0, Math.min(totalBeatsScheduled, currentBeat));
+      if(currentTimeEl) currentTimeEl.textContent = formatTime(beatForUI * spb);
 
       if (progressBar) {
         const total = totalBeatsScheduled;
@@ -914,6 +1074,16 @@ window.addEventListener("DOMContentLoaded", () => {
     accumulatedBeat = pct * totalBeatsScheduled;
     
     if (isPlaying && audioCtx) {
+        // NUCLEAR FIX: Kill "Ghost Notes" from the old position
+        if (masterGain) masterGain.disconnect();
+        
+        masterGain = audioCtx.createGain();
+        masterGain.connect(audioCtx.destination);
+        
+        // Instant ramp up to avoid clicks
+        masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+        masterGain.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.05);
+
         // Instant Audio Re-Sync
         const now = audioCtx.currentTime;
         const spb = 60 / Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
@@ -923,12 +1093,12 @@ window.addEventListener("DOMContentLoaded", () => {
         
         // Align scheduler
         nextBeatIndex = Math.ceil(accumulatedBeat);
-        // Time of next beat = Now + (Fraction remaining * spb)
         nextNoteTime = now + ((nextBeatIndex - accumulatedBeat) * spb);
     }
 
     if (progressBar) progressBar.style.width = (pct * 100) + "%";
     drawPlayheadAtBeat(accumulatedBeat);
+    updateTimeDisplays(); // NEW: Update time when scrubbing
   }
 
   if (barContainer) {
@@ -944,11 +1114,22 @@ window.addEventListener("DOMContentLoaded", () => {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!audioCtx) audioCtx = new AudioContext();
 
-    // Init Master Gain for instant mute capability
-    if (!masterGain) {
-        masterGain = audioCtx.createGain();
-        masterGain.connect(audioCtx.destination);
+    // NUCLEAR FIX: Kill "Ghost Notes"
+    // We disconnect the old Master Gain. Any notes scheduled before the pause 
+    // are still connected to this old node, so they will play into the void (silence).
+    if (masterGain) {
+        masterGain.disconnect();
     }
+    
+    // Create a fresh Master Gain for the new notes
+    masterGain = audioCtx.createGain();
+    masterGain.connect(audioCtx.destination);
+    
+    // Soft start the volume (0.05s fade-in) to prevent "popping"
+    masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.05);
+    
+    // Pre-calculate Events
     
     // Pre-calculate Events
     const flat = flattenEvents(currentExercise);
@@ -967,23 +1148,28 @@ window.addEventListener("DOMContentLoaded", () => {
       playBtnText.textContent = "Pause";
       setStatus("Playing", "play");
 
-      // Unmute
+      // Unmute (with a quick ramp to prevent clicking/popping)
       masterGain.gain.cancelScheduledValues(0);
-      masterGain.gain.setValueAtTime(1, audioCtx.currentTime);
+      masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+      masterGain.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.1);
 
       const tempoNow = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
       const spb = 60 / tempoNow;
       lastTempoVal = tempoNow;
 
-      if (isResuming) {
+// Treat as resume if paused OR if we have scrubbed forward (accumulatedBeat > 0)
+      if (isResuming || accumulatedBeat > 0) {
         // --- RESUME LOGIC ---
-        // We start the timer NOW. 
-        // accumulatedBeat already holds where we were.
         audioStartTime = audioCtx.currentTime;
         
+        // FIX: Revert to ceil. Using floor caused the previous beat to replay immediately,
+        // creating the "double track" or stutter sound.
         nextBeatIndex = Math.ceil(accumulatedBeat);
+        
+        // Calculate exact time for the NEXT beat
         nextNoteTime = audioStartTime + ((nextBeatIndex - accumulatedBeat) * spb);
       } else {
+
         // --- FRESH START LOGIC ---
         accumulatedBeat = -MEASURE_BEATS; // Count-in
         audioStartTime = audioCtx.currentTime;
@@ -1015,6 +1201,16 @@ window.addEventListener("DOMContentLoaded", () => {
       const now = audioCtx.currentTime;
       const spb = 60 / lastTempoVal;
       accumulatedBeat += (now - audioStartTime) / spb;
+      audioStartTime = now; // <--- FIX: Reset start time so subsequent renders don't double-add
+
+      // Force UI to snap to the exact frozen position
+      drawPlayheadAtBeat(accumulatedBeat);
+      if (progressBar) {
+        const total = totalBeatsScheduled;
+        const disp = Math.min(Math.max(0, accumulatedBeat), total);
+        const pct = (total > 0) ? (disp / total) * 100 : 0;
+        progressBar.style.width = pct + "%";
+      }
 
       if (schedulerTimer) {
         clearTimeout(schedulerTimer);
@@ -1052,6 +1248,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
     clearPlayhead();
     if (progressBar) progressBar.style.width = "0%";
+    
+    // NEW: Reset time
+    updateTimeDisplays();
   }
 
   function togglePlayPause() {
@@ -1070,8 +1269,17 @@ window.addEventListener("DOMContentLoaded", () => {
       const allow16ths = !!allow16thsEl?.checked;
       const allowTriplets = !!allowTripletsEl.checked;
       currentExercise = generateExercise({ measures, restPct, allow8ths, allow16ths, allowTriplets });
+      
+      applySticking(currentExercise, stickingStrategyEl.value);
+
       render(currentExercise);
       setStatus(`Generated ${measures} Measures`);
+      
+      // NEW: Recalculate total time since measures/events changed
+      const flat = flattenEvents(currentExercise);
+      totalBeatsScheduled = flat.totalBeats;
+      updateTimeDisplays();
+      
     } catch (e) {
       showError(e);
       setStatus("Render failed (see error box).");
@@ -1106,11 +1314,21 @@ window.addEventListener("DOMContentLoaded", () => {
     } else {
         lastTempoVal = Math.max(40, Math.min(220, Number(tempoEl.value) || 120));
     }
+    
+    // NEW: Update time displays immediately as tempo changes
+    updateTimeDisplays();
   });
 
   restsEl.addEventListener("input", () => {
     restsValEl.textContent = restsEl.value;
     syncSliderFill(restsEl);
+  });
+
+  stickingStrategyEl.addEventListener("change", () => {
+    if (currentExercise) {
+      applySticking(currentExercise, stickingStrategyEl.value);
+      render(currentExercise);
+    }
   });
 
   regenBtn.addEventListener("click", regenerate);
