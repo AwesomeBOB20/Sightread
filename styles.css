@@ -60,7 +60,7 @@ body{
 @media (min-width: 1100px) {
   .top-content-row {
     display: grid;
-    grid-template-columns: 65% 1fr; 
+    grid-template-columns: 50% 1fr; 
     gap: var(--section-gap);
     align-items: stretch; 
     margin-bottom: var(--section-gap); 
