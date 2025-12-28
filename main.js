@@ -1650,8 +1650,7 @@ Object.keys(RHYTHM_VARIANTS).forEach(key => {
  * HELPER: Filters the global RHYTHM_VARIANTS database
  */
 function getStrictCandidates(targetBeats, isCompoundContext, restPct) {
-    const denseCandidates = [];
-    const sparseCandidates = []; 
+    const candidates = [];
     const eps = 0.01;
 
     // Iterate over every category
@@ -1664,8 +1663,6 @@ function getStrictCandidates(targetBeats, isCompoundContext, restPct) {
 
         if (categoryKey === "dottedQ") {
             if (!allowDottedQuartersEl.checked) continue;
-            // FIXED: Removed "Busy Context" throttle. 
-            // Dotted Quarters are now ALWAYS available if checked.
         }
 
         if (categoryKey === "8s" && !allow8thsEl.checked) continue;
@@ -1699,44 +1696,33 @@ function getStrictCandidates(targetBeats, isCompoundContext, restPct) {
             const isCompoundTile = !!v._isCompoundVariant;
 
             if (isCompoundContext) {
-                // === COMPOUND TIME (6/8, 9/8, etc.) ===
-                // We typically want tiles marked as Compound.
-                // However, we strictly ALLOW "dottedQ" (the Pulse) even though it's technically Simple in origin.
-                // We BAN standard Simple tiles unless they are the specific "Pulse" tiles.
+                // === COMPOUND TIME ===
+                // Allow Compound tiles OR strict "Pulse" tiles (q_c_1)
                 if (!isCompoundTile && categoryKey !== "dottedQ" && v.id !== "q_c_1") continue;
             } else {
-                // === SIMPLE TIME (4/4, 2/4, etc.) ===
-                // STRICTLY BAN anything marked as Compound.
-                // This prevents the "3 Quarters" (q_cmp_111) tile from appearing in 4/4.
+                // === SIMPLE TIME ===
+                // BAN anything marked as Compound
                 if (isCompoundTile) continue;
             }
 
-            // 5. SORT INTO DENSE VS SPARSE
+            // 5. REST FILTER EXCEPTION
+            // The User Request: "The only exception should be dotted quarter variations with rests."
+            // Logic:
+            // - If category is 'dottedQ' AND Rest Slider is 0% -> BAN variations with rests.
+            // - Otherwise -> ALLOW everything (let the Weights decide).
             const hasRest = v.notes.some(n => n.kind === 'rest' || !!n.rest);
-            if (hasRest) sparseCandidates.push(v);
-            else denseCandidates.push(v);
+
+            if (categoryKey === "dottedQ") {
+                if (restPct === 0 && hasRest) continue;
+            }
+
+            // 6. ADD TO POOL
+            candidates.push(v);
         }
     }
 
-    // === REST SLIDER LOGIC ===
-    if (restPct === 0) {
-        if (denseCandidates.length > 0) return denseCandidates;
-        return sparseCandidates; 
-    }
-
-    const roll = Math.random() * 100;
-    if (roll < restPct && sparseCandidates.length > 0) {
-        return sparseCandidates;
-    }
-    
-    if (denseCandidates.length > 0) {
-        return denseCandidates;
-    }
-    
-    return sparseCandidates;
+    return candidates;
 }
-
-
 
 
 
@@ -1757,13 +1743,46 @@ function pickRandomStrict(list) {
         groups[type].push(item);
     });
 
-    // 2. Pick a Random Category (Equal Weighting)
-    // This ensures "Quarter Notes" (1 variant) have the same probability 
-    // as "16th Notes" (20 variants).
-    const types = Object.keys(groups);
-    const chosenType = types[Math.floor(Math.random() * types.length)];
+    // 2. WEIGHTED LOTTERY SYSTEM (ALL CATEGORIES EXPLICIT)
+    // "Tickets" in the lottery. Higher number = generates more often.
+    const WEIGHTS = {
+        // === CORE RHYTHMS (Your High Priority) ===
+        "16s": 8,      // 16th Notes
+        "8t": 8,       // Triplets
+        "8s": 3,       // 8th Notes
+        
+        // === BASIC PULSE ===
+        "q": 3,         // Quarter Notes
+        "dottedQ": 1,   // Dotted Quarter Phrases (e.g. q. + 8th)
 
-    // 3. Pick a Random Variant from that Category
+        // === ADVANCED TUPLETS (The "Spice") ===
+        "qt": 3,        // Quarter Triplets (3 over 2)
+        "5let": 3,      // 5-lets (8th note base)
+        "5let16": 3,    // 5-lets (16th note base)
+        "6let": 3,      // Sextuplets
+        "9let": 3,      // 9-lets
+
+        // === FALLBACK ===
+        "default": 2
+    };
+
+    const lotteryPool = [];
+    const types = Object.keys(groups);
+
+    types.forEach(type => {
+        // Use specific weight, or fallback to default
+        const weight = WEIGHTS[type] || WEIGHTS["default"];
+        
+        // Add this category to the pool 'weight' times
+        for (let i = 0; i < weight; i++) {
+            lotteryPool.push(type);
+        }
+    });
+
+    // 3. Pick a Random Category from the Weighted Pool
+    const chosenType = lotteryPool[Math.floor(Math.random() * lotteryPool.length)];
+
+    // 4. Pick a Random Variant from that Category
     const subList = groups[chosenType];
     const choice = subList[Math.floor(Math.random() * subList.length)];
     
@@ -1785,9 +1804,6 @@ function pickRandomStrict(list) {
     
     return copy;
 }
-
-
-
 
 // === SYNCOPATION HELPERS ===
 
@@ -1856,10 +1872,11 @@ function generateExercise({ measures, timeSignatures, restPct, allowSyncopation 
     const out = [];
     const safeTimeSigs = (timeSignatures && timeSignatures.length > 0) ? timeSignatures : ["4/4"];
 
-    // HELPER: If rests are 0%, strictly remove any candidate tile that contains a rest.
+// HELPER: Pass-through (Disabled Density Filtering)
+    // This ensures variations with rests (like "1 e &") are ALWAYS allowed,
+    // regardless of the Rest Slider setting.
     function applyDensityFilter(list) {
-        if (restPct > 0) return list;
-        return list.filter(t => !t.notes.some(n => n.kind === 'rest' || !!n.rest));
+        return list; 
     }
     
     // HELPER: Procedural 0.5 beat fillers (Eighth or 2-16ths)
@@ -1995,7 +2012,9 @@ function generateExercise({ measures, timeSignatures, restPct, allowSyncopation 
                      const b1 = applyDensityFilter(getStrictCandidates(1.0, false, restPct));
 
                      const mustPick3 = (b3.length > 0 && b1.length === 0 && b2.length === 0);
-                     if (mustPick3 || (b3.length > 0 && Math.random() < 0.30)) {
+                     
+                     // CHANGE 0.30 TO 0.05 HERE:
+                     if (mustPick3 || (b3.length > 0 && Math.random() < 0.10)) {
                          candidates = b3;
                          usedBucketSize = 3;
                      }
@@ -2010,7 +2029,8 @@ function generateExercise({ measures, timeSignatures, restPct, allowSyncopation 
                      let bucketList = [];
                      if (b2Strict.length > 0) {
                          const forceBucket = (b1Strict.length === 0);
-                         if (forceBucket || Math.random() < 0.50) bucketList = b2Strict;
+                         // CHANGE 0.50 TO 0.10 HERE:
+                         if (forceBucket || Math.random() < 0.10) bucketList = b2Strict;
                      }
                      else if (b1Strict.length === 0 && rawB2.length > 0) {
                          bucketList = rawB2;
